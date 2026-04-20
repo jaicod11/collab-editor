@@ -1,0 +1,6 @@
+{
+  "name": "collab-editor-shared",
+  "version": "1.0.0",
+  "description": "Shared OT logic used by both client and server",
+  "main": "ot/operations.js"
+}
