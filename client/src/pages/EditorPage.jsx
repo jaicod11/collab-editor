@@ -1,18 +1,14 @@
 /**
- * pages/EditorPage.jsx — FIXED
- * ─────────────────────────────────────────────────────────────────────────────
- * KEY FIX: useOT and usePresence are called ONLY inside EditorCore.
- * This page was previously also calling them, causing every op to be
- * applied twice — producing palindromes and garbled text.
- *
- * Data flow:
- *   EditorPage → socket → EditorCore → useOT / usePresence
- *   EditorCore → onCollaboratorsChange → EditorPage state
- *   EditorCore → onRevisionChange      → EditorPage state
+ * pages/EditorPage.jsx — New UI (Stitch v2)
+ * Dark sidebar + white editor canvas split layout.
+ * Sidebar: dark #0a0f1e with teal glow accents, gradient background.
+ * Canvas: clean white with top navbar, formatting toolbar, remote cursors.
+ * Bottom: dark glassmorphism floating format pill.
+ * Status bar: dark with live/save indicators.
  */
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { useParams, useNavigate }  from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 
 import { useSocket }    from "../hooks/useSocket";
 import { useDocument }  from "../hooks/useDocument";
@@ -20,21 +16,153 @@ import { useToast }     from "../components/UI/Toast";
 import { useAuthStore } from "../store/authSlice";
 
 import EditorCore          from "../components/Editor/EditorCore";
-import Toolbar             from "../components/Editor/Toolbar";
-import PresenceAvatars     from "../components/Editor/PresenceAvatars";
-import DocumentList        from "../components/Sidebar/DocumentList";
 import VersionHistoryPanel from "../components/Sidebar/VersionHistoryPanel";
 
-// ─── Status bar ───────────────────────────────────────────────────────────────
-function StatusBar({ saveStatus, connected, onlineCount }) {
+const ANIM_STYLES = `
+  @keyframes blink { from,to{opacity:1} 50%{opacity:0} }
+  .cursor-blink { animation:blink 1s step-end infinite; }
+  .sidebar-grad {
+    background: radial-gradient(circle at top right,rgba(0,212,255,.05),transparent),
+                radial-gradient(circle at bottom left,rgba(96,1,209,.05),transparent);
+  }
+  .scrollbar-thin::-webkit-scrollbar { width:4px; }
+  .scrollbar-thin::-webkit-scrollbar-thumb { background:rgba(255,255,255,.1); border-radius:10px; }
+  .no-scrollbar::-webkit-scrollbar { display:none; }
+  .no-scrollbar { -ms-overflow-style:none; scrollbar-width:none; }
+`;
+
+// ─── Toolbar button ────────────────────────────────────────────────────────────
+function TBtn({ icon, label, onClick, active }) {
   return (
-    <div className="flex items-center justify-between px-6 py-1.5 border-t border-outline-variant/10 bg-surface-container-lowest text-[11px] text-on-surface-variant flex-shrink-0">
-      <span>{saveStatus}</span>
-      <div className="flex items-center gap-2">
-        <span className={`w-2 h-2 rounded-full transition-colors ${connected ? "bg-green-400" : "bg-red-400 animate-pulse"}`} />
-        <span>{connected ? `${onlineCount} user${onlineCount !== 1 ? "s" : ""} online` : "Reconnecting…"}</span>
+    <button title={label} onClick={onClick}
+      className={`p-1.5 rounded transition-colors ${active ? "bg-indigo-100 text-indigo-600" : "hover:bg-slate-100 text-slate-600"}`}>
+      <span className="material-symbols-outlined text-xl">{icon}</span>
+    </button>
+  );
+}
+
+function TDivider() {
+  return <div className="h-6 w-px bg-slate-200 mx-1 flex-shrink-0" />;
+}
+
+// ─── Formatting toolbar ────────────────────────────────────────────────────────
+function Toolbar({ disabled }) {
+  const exec = (cmd) => { if (!disabled) document.execCommand(cmd, false, null); };
+  const block = (tag) => { if (!disabled) document.execCommand("formatBlock", false, tag); };
+
+  return (
+    <div className="flex items-center gap-0.5 px-10 py-2.5 bg-white/50 border-b border-slate-100 overflow-x-auto no-scrollbar sticky top-16 z-30">
+      <TBtn icon="format_bold"       label="Bold"          onClick={() => exec("bold")} />
+      <TBtn icon="format_italic"     label="Italic"        onClick={() => exec("italic")} />
+      <TBtn icon="format_underlined" label="Underline"     onClick={() => exec("underline")} />
+      <TDivider />
+      <div className="flex items-center">
+        <select onChange={(e) => { if (e.target.value) { block(e.target.value); e.target.value=""; }}}
+          defaultValue=""
+          className="text-xs font-semibold text-slate-600 bg-transparent border-none outline-none cursor-pointer hover:bg-slate-100 px-2 py-1.5 rounded">
+          <option value="" disabled>Heading</option>
+          <option value="h1">H1</option>
+          <option value="h2">H2</option>
+          <option value="h3">H3</option>
+          <option value="p">Paragraph</option>
+        </select>
       </div>
+      <TDivider />
+      <TBtn icon="format_list_bulleted"  label="Bullet list"   onClick={() => exec("insertUnorderedList")} />
+      <TBtn icon="format_list_numbered"  label="Numbered list" onClick={() => exec("insertOrderedList")} />
+      <TDivider />
+      <TBtn icon="format_align_left"   label="Align left"   onClick={() => exec("justifyLeft")} />
+      <TBtn icon="format_align_center" label="Align center" onClick={() => exec("justifyCenter")} />
+      <TDivider />
+      <TBtn icon="palette" label="Color" onClick={() => {}} />
     </div>
+  );
+}
+
+// ─── Sidebar document list ─────────────────────────────────────────────────────
+function Sidebar({ docId: activeId, documents, onSelect, onNew, onClose }) {
+  return (
+    <aside className="w-[260px] flex-shrink-0 flex flex-col h-full border-r border-white/5 sidebar-grad relative"
+      style={{ background:"#0a0f1e", fontFamily:"Manrope,sans-serif" }}>
+
+      {/* Logo + collapse */}
+      <div className="p-6">
+        <div className="flex items-center justify-between gap-3 mb-8">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg flex items-center justify-center"
+              style={{ background:"#00d4ff", boxShadow:"0 0 15px rgba(0,212,255,0.4)" }}>
+              <span className="material-symbols-outlined text-white text-lg"
+                style={{ fontVariationSettings:"'FILL' 1" }}>cloud_done</span>
+            </div>
+            <span className="text-xl font-black tracking-tighter text-white">CollabDocs</span>
+          </div>
+          <button onClick={onClose} className="text-white/40 hover:text-white transition-colors">
+            <span className="material-symbols-outlined text-lg">menu_open</span>
+          </button>
+        </div>
+
+        {/* New doc button */}
+        <button onClick={onNew}
+          className="w-full py-4 px-4 border-2 border-dashed border-white/10 rounded-xl mb-6 flex items-center justify-center gap-2 text-white/60 hover:border-[#00d4ff] hover:text-[#00d4ff] hover:bg-[#00d4ff]/5 transition-all duration-300 group">
+          <span className="material-symbols-outlined group-hover:scale-110 transition-transform">add_circle</span>
+          <span className="text-xs font-bold uppercase tracking-wider">+ New Document</span>
+        </button>
+
+        {/* Doc list */}
+        <nav className="space-y-1 overflow-y-auto scrollbar-thin" style={{ maxHeight:"calc(100vh - 300px)" }}>
+          {(Array.isArray(documents) ? documents : []).map((doc) => {
+            const id = doc._id ?? doc.id ?? "";
+            const isActive = id === activeId;
+            return (
+              <div key={id} onClick={() => onSelect(id)}
+                className={`px-2 py-3 rounded-lg flex items-center gap-3 cursor-pointer transition-all
+                  ${isActive
+                    ? "bg-white/10 text-[#00d4ff] border-l-4 border-[#00d4ff]"
+                    : "text-white/40 hover:text-white/80 hover:bg-white/5 border-l-4 border-transparent"}`}
+                style={isActive ? { boxShadow:"0 0 20px rgba(0,212,255,0.1)" } : {}}>
+                <span className="material-symbols-outlined text-lg flex-shrink-0">description</span>
+                <span className="text-sm truncate font-semibold">{doc.title ?? "Untitled"}</span>
+              </div>
+            );
+          })}
+        </nav>
+      </div>
+
+      {/* Bottom */}
+      <div className="mt-auto p-6 space-y-4 border-t border-white/5">
+        {[{icon:"settings",label:"Settings"},{icon:"help",label:"Support"}].map(({icon,label}) => (
+          <div key={label} className="flex items-center gap-3 text-white/40 hover:text-white transition-colors cursor-pointer">
+            <span className="material-symbols-outlined text-lg">{icon}</span>
+            <span className="text-xs font-bold uppercase tracking-widest">{label}</span>
+          </div>
+        ))}
+      </div>
+    </aside>
+  );
+}
+
+// ─── Status bar ───────────────────────────────────────────────────────────────
+function StatusBar({ saveStatus, connected, wordCount }) {
+  return (
+    <footer className="h-8 border-t border-white/5 flex items-center justify-between px-6 flex-shrink-0"
+      style={{ background:"#090e1c" }}>
+      <div className="flex items-center gap-6">
+        <div className="flex items-center gap-2">
+          <div className={`w-2 h-2 rounded-full ${connected ? "bg-emerald-400 animate-pulse" : "bg-red-400"}`} />
+          <span className="text-[10px] font-bold text-white/40 uppercase tracking-widest">
+            {connected ? "System Online" : "Reconnecting"}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="material-symbols-outlined text-white/40" style={{ fontSize:12 }}>sync</span>
+          <span className="text-[10px] font-bold text-white/40 uppercase tracking-widest">{saveStatus}</span>
+        </div>
+      </div>
+      <div className="flex items-center gap-4">
+        <span className="text-[10px] font-bold text-white/40 uppercase tracking-widest">{wordCount} words</span>
+        <span className="text-[10px] font-bold text-white/40 uppercase tracking-widest">UTF-8</span>
+      </div>
+    </footer>
   );
 }
 
@@ -45,85 +173,70 @@ export default function EditorPage() {
   const { toast }   = useToast();
   const currentUser = useAuthStore((s) => s.user);
 
-  // ── Local UI state ────────────────────────────────────────────────────────
   const [title,        setTitle]        = useState("Untitled Document");
   const [saveStatus,   setSaveStatus]   = useState("All changes saved");
   const [showHistory,  setShowHistory]  = useState(false);
   const [sidebarOpen,  setSidebarOpen]  = useState(true);
-
-  // ── Data from EditorCore (via callbacks) ──────────────────────────────────
-  // These are updated by EditorCore when its internal hooks produce new values.
-  const [collaborators, setCollaborators] = useState([]);
-  const [revision,      setRevision]      = useState(0);
+  const [collaborators,setCollaborators]= useState([]);
+  const [revision,     setRevision]     = useState(0);
+  const [wordCount,    setWordCount]    = useState(0);
 
   const editorCoreRef = useRef(null);
   const saveTimer     = useRef(null);
   const titleTimer    = useRef(null);
 
-  // ── Socket — one connection, passed to EditorCore ─────────────────────────
-  // EditorCore passes it to useOT and usePresence internally.
-  // DO NOT call useOT or usePresence here — that was the bug.
-  const { socket, connected } = useSocket(docId);
+  const { socket, connected }                        = useSocket(docId);
+  const { activeDocument, documents, updateTitle, createDoc, loadDocuments } = useDocument();
 
-  // ── REST document operations ──────────────────────────────────────────────
-  const { activeDocument, updateTitle, createDoc } = useDocument();
+  // Load documents for sidebar
+  useEffect(() => { loadDocuments(); }, []);
 
-  // Set title from loaded document
+  // Title from server
   useEffect(() => {
     if (activeDocument?.title) setTitle(activeDocument.title);
   }, [activeDocument]);
 
-  // Socket error toast
-  useEffect(() => {
-    if (!socket) return;
-    const onErr = ({ message }) => toast.error(message);
-    socket.on("doc:error", onErr);
-    return () => socket.off("doc:error", onErr);
-  }, [socket, toast]);
-
-  // Socket doc:load — update title from server
   useEffect(() => {
     if (!socket) return;
     const onLoad = ({ title: t }) => { if (t) setTitle(t); };
-    socket.on("doc:load", onLoad);
-    return () => socket.off("doc:load", onLoad);
-  }, [socket]);
+    const onErr  = ({ message }) => toast.error(message);
+    socket.on("doc:load",  onLoad);
+    socket.on("doc:error", onErr);
+    return () => { socket.off("doc:load", onLoad); socket.off("doc:error", onErr); };
+  }, [socket, toast]);
 
-  // ── Autosave content (debounced 1.5s) ────────────────────────────────────
-  const handleContentChange = useCallback(() => {
+  const handleContentChange = useCallback((content) => {
     setSaveStatus("Saving…");
+    const words = (content ?? "").trim().split(/\s+/).filter(Boolean).length;
+    setWordCount(words);
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => setSaveStatus("All changes saved"), 1500);
   }, []);
 
-  // ── Autosave title (debounced 800ms) ─────────────────────────────────────
   const handleTitleInput = useCallback((e) => {
-    const newTitle = e.currentTarget.textContent ?? "";
-    setTitle(newTitle);
+    const t = e.currentTarget.textContent ?? "";
+    setTitle(t);
     clearTimeout(titleTimer.current);
     titleTimer.current = setTimeout(async () => {
-      if (docId && newTitle.trim()) {
-        try { await updateTitle(docId, newTitle.trim()); }
+      if (docId && t.trim()) {
+        try { await updateTitle(docId, t.trim()); }
         catch { toast.error("Failed to save title"); }
       }
     }, 800);
   }, [docId, updateTitle, toast]);
 
-  // ── Navigation helpers ────────────────────────────────────────────────────
   const handleDocSelect = useCallback((id) => navigate(`/editor/${id}`), [navigate]);
-
-  const handleNewDoc = useCallback(async () => {
+  const handleNewDoc    = useCallback(async () => {
     const doc = await createDoc("Untitled Document");
     if (doc) navigate(`/editor/${doc._id ?? doc.id}`);
     else toast.error("Failed to create document");
   }, [createDoc, navigate, toast]);
 
-  const handleRestore = useCallback((version) => {
-    toast.success(`Restored to version from ${version.timestamp}`);
+  const handleRestore = useCallback((v) => {
+    toast.success(`Restored to version from ${v.timestamp}`);
     setShowHistory(false);
   }, [toast]);
 
-  // Cleanup timers
   useEffect(() => () => {
     clearTimeout(saveTimer.current);
     clearTimeout(titleTimer.current);
@@ -132,156 +245,163 @@ export default function EditorPage() {
   const onlineCount = collaborators.length + 1;
 
   return (
-    <div className="bg-surface text-on-surface min-h-screen flex flex-col overflow-hidden">
+    <div className="flex h-screen overflow-hidden" style={{ background:"#090e1c", fontFamily:"Manrope,sans-serif" }}>
+      <style>{ANIM_STYLES}</style>
 
-      {/* ── Top navigation bar ────────────────────────────────────────────── */}
-      <header className="w-full sticky top-0 bg-white/90 backdrop-blur-md flex items-center justify-between px-4 py-2.5 shadow-[0_20px_50px_rgba(25,49,93,0.04)] z-40 flex-shrink-0 gap-4">
+      {/* Sidebar */}
+      {sidebarOpen && (
+        <Sidebar
+          docId={docId}
+          documents={documents}
+          onSelect={handleDocSelect}
+          onNew={handleNewDoc}
+          onClose={() => setSidebarOpen(false)}
+        />
+      )}
 
-        {/* Left */}
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <button
-            onClick={() => setSidebarOpen((o) => !o)}
-            className="p-2 rounded-lg hover:bg-surface-container-high transition-colors"
-            title="Toggle sidebar"
-          >
-            <span className="material-symbols-outlined text-on-surface-variant text-[20px]">
-              {sidebarOpen ? "menu_open" : "menu"}
-            </span>
-          </button>
-          <button
-            onClick={() => navigate("/")}
-            className="p-2 rounded-lg hover:bg-surface-container-high transition-colors"
-            title="Back to dashboard"
-          >
-            <span className="material-symbols-outlined text-on-surface-variant text-[20px]">arrow_back</span>
-          </button>
-          <span className="text-lg font-headline font-bold tracking-tight text-on-surface hidden sm:block">
-            CollabDocs
-          </span>
-        </div>
+      {/* Main editor area */}
+      <main className="flex-grow flex flex-col overflow-hidden bg-white relative">
 
-        {/* Center — editable title */}
-        <h1
-          contentEditable
-          suppressContentEditableWarning
-          onInput={handleTitleInput}
-          data-placeholder="Untitled Document"
-          className="flex-1 min-w-0 text-center text-base font-headline font-bold text-on-surface outline-none focus:ring-0 truncate px-2 empty:before:content-[attr(data-placeholder)] empty:before:text-outline/40"
-        >
-          {title}
-        </h1>
+        {/* Top navbar */}
+        <header className="h-16 flex items-center justify-between px-6 md:px-10 bg-white/80 backdrop-blur-md sticky top-0 z-50 border-b border-slate-100 flex-shrink-0">
 
-        {/* Right */}
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <PresenceAvatars collaborators={collaborators} maxVisible={3} size="sm" />
-          <div className="h-6 w-[1px] bg-outline-variant/20 mx-1" />
-          <button
-            onClick={() => setShowHistory(true)}
-            className="p-2 rounded-lg hover:bg-surface-container-high transition-colors"
-            title="Version history"
-          >
-            <span className="material-symbols-outlined text-on-surface-variant text-[20px]">history</span>
-          </button>
-          <button className="hidden sm:flex px-3 py-1.5 text-sm text-on-primary-container font-semibold hover:bg-surface-container-high transition-colors rounded-lg">
-            Collaborate
-          </button>
-          <button className="px-3 py-1.5 text-sm bg-primary text-on-primary font-semibold rounded-lg shadow-sm hover:opacity-90 transition-all">
-            Share
-          </button>
-        </div>
-      </header>
+          {/* Left */}
+          <div className="flex items-center gap-3 min-w-0">
+            {!sidebarOpen && (
+              <button onClick={() => setSidebarOpen(true)}
+                className="p-2 rounded-lg hover:bg-slate-100 transition-colors flex-shrink-0">
+                <span className="material-symbols-outlined text-slate-500 text-xl">menu</span>
+              </button>
+            )}
+            <button onClick={() => navigate("/")}
+              className="p-2 rounded-lg hover:bg-slate-100 transition-colors flex-shrink-0">
+              <span className="material-symbols-outlined text-slate-500 text-xl">arrow_back</span>
+            </button>
 
-      {/* ── Body ─────────────────────────────────────────────────────────── */}
-      <div className="flex flex-1 overflow-hidden">
-
-        {/* Sidebar */}
-        {sidebarOpen && (
-          <aside className="flex-shrink-0 border-r border-outline-variant/10 overflow-hidden">
-            <DocumentList
-              activeDocId={docId}
-              onSelect={handleDocSelect}
-              onNewDoc={handleNewDoc}
-            />
-          </aside>
-        )}
-
-        {/* Editor column */}
-        <div className="flex-1 flex flex-col overflow-hidden">
-
-          <Toolbar
-            disabled={!connected}
-            onFormat={handleContentChange}
-          />
-
-          <div className="flex-1 overflow-y-auto">
-            <div className="max-w-4xl mx-auto py-16 px-6">
-
-              {/* Presence strip */}
-              <div className="flex items-center gap-4 mb-8 pb-6 border-b border-outline-variant/10">
-                <PresenceAvatars collaborators={collaborators} maxVisible={5} />
-                <span className="text-on-surface-variant text-sm font-medium">
-                  {connected ? "Live" : "Offline"} · rev {revision}
-                </span>
-              </div>
-
-              {/* ── EditorCore: the ONLY place useOT is called ───────────── */}
-              <EditorCore
-                ref={editorCoreRef}
-                docId={docId}
-                socket={socket}
-                connected={connected}
-                currentUser={currentUser}
-                initialContent={activeDocument?.content ?? ""}
-                onContentChange={handleContentChange}
-                onCollaboratorsChange={setCollaborators}
-                onRevisionChange={setRevision}
-              />
-            </div>
+            {/* Editable title */}
+            <h1
+              contentEditable suppressContentEditableWarning
+              onInput={handleTitleInput}
+              data-placeholder="Untitled Document"
+              className="text-xl font-black text-slate-900 tracking-tight outline-none focus:ring-0 truncate
+                empty:before:content-[attr(data-placeholder)] empty:before:text-slate-300"
+            >
+              {title}
+            </h1>
           </div>
 
-          <StatusBar
-            saveStatus={saveStatus}
-            connected={connected}
-            onlineCount={onlineCount}
-          />
-        </div>
-      </div>
+          {/* Center: presence avatars */}
+          <div className="flex items-center gap-3 flex-shrink-0">
+            <div className="flex -space-x-2">
+              {collaborators.slice(0, 3).map((c) => (
+                <div key={c.userId} title={c.name}
+                  className={`w-8 h-8 rounded-full border-2 border-white flex items-center justify-center text-[10px] font-black text-white ${c.color ?? "bg-cyan-500"}`}
+                  style={{ boxShadow:"0 0 0 2px #00d4ff" }}>
+                  {c.initials ?? c.name?.slice(0,2).toUpperCase()}
+                </div>
+              ))}
+              {collaborators.length === 0 && (
+                <div className="w-8 h-8 rounded-full border-2 border-white bg-cyan-500 flex items-center justify-center text-[10px] font-black text-white">
+                  {currentUser?.name?.slice(0, 2).toUpperCase() ?? "ME"}
+                </div>
+              )}
+              {collaborators.length > 3 && (
+                <div className="w-8 h-8 rounded-full border-2 border-white bg-slate-200 flex items-center justify-center text-[10px] font-black text-slate-600">
+                  +{collaborators.length - 3}
+                </div>
+              )}
+            </div>
 
-      {/* ── Floating quick-format bar ─────────────────────────────────────── */}
-      <div className="fixed bottom-8 left-1/2 -translate-x-1/2 bg-white/90 backdrop-blur-md px-5 py-2.5 rounded-full shadow-[0_20px_50px_rgba(25,49,93,0.1)] flex items-center gap-3 border border-outline-variant/10 z-30">
+            <div className="h-4 w-px bg-slate-200" />
+
+            {/* Action buttons */}
+            <div className="flex items-center gap-1">
+              <button className="p-2 text-slate-400 hover:bg-slate-100 rounded-lg transition-colors" title="Collaborators">
+                <span className="material-symbols-outlined">group</span>
+              </button>
+              <button onClick={() => setShowHistory(true)}
+                className="p-2 text-slate-400 hover:bg-slate-100 rounded-lg transition-colors" title="Version history">
+                <span className="material-symbols-outlined">history</span>
+              </button>
+              <button className="p-2 text-[#00d4ff] hover:bg-cyan-50 rounded-lg transition-colors" title="Saved">
+                <span className="material-symbols-outlined" style={{ fontVariationSettings:"'FILL' 1" }}>cloud_done</span>
+              </button>
+            </div>
+
+            <button className="px-6 py-2 text-white font-bold rounded-full text-sm transition-all hover:scale-105"
+              style={{ background:"#00d4ff", boxShadow:"0 4px 20px rgba(0,212,255,0.35)", color:"#003642" }}>
+              Share
+            </button>
+          </div>
+        </header>
+
+        {/* Formatting toolbar */}
+        <Toolbar disabled={!connected} />
+
+        {/* Editor canvas */}
+        <div className="flex-grow overflow-y-auto scrollbar-thin bg-slate-50/30 pb-40">
+          <div className="max-w-[720px] mx-auto bg-white min-h-[calc(100vh-200px)] shadow-sm ring-1 ring-black/5 p-10 md:p-20 relative my-8">
+
+            {/* Last edited strip */}
+            <div className="flex items-center gap-2 mb-8 text-[11px] font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-4">
+              <span className="material-symbols-outlined text-sm">edit_note</span>
+              {connected
+                ? `Live · rev ${revision} · ${onlineCount} user${onlineCount !== 1 ? "s" : ""} online`
+                : "Offline — changes will sync when reconnected"
+              }
+            </div>
+
+            {/* EditorCore — sole owner of useOT */}
+            <EditorCore
+              ref={editorCoreRef}
+              docId={docId}
+              socket={socket}
+              connected={connected}
+              currentUser={currentUser}
+              initialContent={activeDocument?.content ?? ""}
+              onContentChange={handleContentChange}
+              onCollaboratorsChange={setCollaborators}
+              onRevisionChange={setRevision}
+              className="text-slate-800 text-[17px] leading-[1.85]"
+            />
+          </div>
+        </div>
+      </main>
+
+      {/* Floating format pill */}
+      <nav className="fixed bottom-12 left-1/2 -translate-x-1/2 z-50 flex items-center px-6 py-3 gap-6 rounded-2xl border border-white/10 shadow-2xl"
+        style={{ background:"rgba(15,23,42,0.92)", backdropFilter:"blur(24px)", boxShadow:"0 20px 60px rgba(0,212,255,0.12)" }}>
         {[
-          { icon: "format_bold",   cmd: "bold",   label: "Bold"   },
-          { icon: "format_italic", cmd: "italic", label: "Italic" },
-        ].map(({ icon, cmd, label }) => (
-          <button
-            key={cmd}
-            title={label}
-            onClick={() => { document.execCommand(cmd, false, null); handleContentChange(); }}
-            className="flex flex-col items-center gap-0.5 group"
-          >
-            <span className="material-symbols-outlined text-on-surface-variant group-hover:text-primary transition-colors text-[18px]">{icon}</span>
-            <span className="text-[9px] font-bold text-on-surface-variant uppercase tracking-wide">{label}</span>
+          { icon:"format_bold",   label:"Bold",    cmd:"bold"   },
+          { icon:"format_italic", label:"Italic",  cmd:"italic" },
+        ].map(({ icon, label, cmd }) => (
+          <button key={cmd}
+            onClick={() => document.execCommand(cmd, false, null)}
+            className="text-white/70 hover:text-white hover:scale-110 transition-transform flex flex-col items-center gap-1">
+            <span className="material-symbols-outlined text-sm">{icon}</span>
+            <span className="text-[10px] font-bold">{label}</span>
           </button>
         ))}
-        <div className="h-5 w-[1px] bg-outline-variant/20" />
-        <button
-          title="Add link"
-          onClick={() => {
-            const url = window.prompt("Enter URL:");
-            if (url) document.execCommand("createLink", false, url);
-          }}
-          className="flex flex-col items-center gap-0.5 group"
-        >
-          <span className="material-symbols-outlined text-on-surface-variant group-hover:text-primary transition-colors text-[18px]">add_link</span>
-          <span className="text-[9px] font-bold text-on-surface-variant uppercase tracking-wide">Link</span>
+        <button className="text-cyan-400 scale-110 flex flex-col items-center gap-1"
+          onClick={() => { const url = window.prompt("Enter URL:"); if (url) document.execCommand("createLink", false, url); }}>
+          <span className="material-symbols-outlined text-sm">link</span>
+          <span className="text-[10px] font-bold">Link</span>
         </button>
-        <div className="h-5 w-[1px] bg-outline-variant/20" />
-        <button className="px-3 py-1 bg-primary text-on-primary text-xs font-bold rounded-full hover:opacity-90 transition-all">
-          Publish
+        <button className="text-white/70 hover:text-white hover:scale-110 transition-transform flex flex-col items-center gap-1">
+          <span className="material-symbols-outlined text-sm">add_comment</span>
+          <span className="text-[10px] font-bold">Comment</span>
         </button>
-      </div>
+        <div className="h-8 w-px bg-white/10 mx-2" />
+        <button className="px-5 py-2 font-black text-xs rounded-lg hover:scale-105 active:scale-95 transition-all"
+          style={{ background:"#00d4ff", color:"#003642", boxShadow:"0 4px 15px rgba(0,212,255,0.3)" }}>
+          PUBLISH
+        </button>
+      </nav>
 
-      {/* ── Version history panel ─────────────────────────────────────────── */}
+      {/* Status bar */}
+      <StatusBar saveStatus={saveStatus} connected={connected} wordCount={wordCount} />
+
+      {/* Version history panel */}
       <VersionHistoryPanel
         isOpen={showHistory}
         onClose={() => setShowHistory(false)}
