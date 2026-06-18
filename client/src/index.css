@@ -1,6 +1,6 @@
 /* client/src/index.css */
-/* ── Google Fonts — MUST come before @tailwind ───────────────────────────── */
-@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap");
+/* ── Fonts — ALL must be before @tailwind ─────────────────────────────────── */
+@import url("https://fonts.googleapis.com/css2?family=Geist:wght@100;200;300;400;500;600;700;800;900&family=Syne:wght@700;800&family=DM+Sans:wght@400;500;600;700&display=swap");
 @import url("https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap");
 
 @tailwind base;
@@ -14,78 +14,283 @@
   user-select: none;
 }
 
-/* ── Scrollbars ───────────────────────────────────────────────────────────── */
-.scrollbar-thin::-webkit-scrollbar        { width: 4px; }
-.scrollbar-thin::-webkit-scrollbar-track  { background: transparent; }
-.scrollbar-thin::-webkit-scrollbar-thumb  { background: rgba(255,255,255,.12); border-radius: 10px; }
-.scrollbar-hide::-webkit-scrollbar        { display: none; }
-.scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
-.no-scrollbar::-webkit-scrollbar { display: none; }
-.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+/* ── Base resets ──────────────────────────────────────────────────────────── */
+*,
+::before,
+::after {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: "Geist", "DM Sans", sans-serif;
+  background: #0d0d0d;
+  color: #f0f0f0;
+  -webkit-font-smoothing: antialiased;
+}
 
 /* ── Selection ────────────────────────────────────────────────────────────── */
-::selection { background-color: rgba(0,212,255,.25); color: #fff; }
+::selection {
+  background: rgba(0, 212, 255, 0.25);
+  color: #fff;
+}
+
+/* ── Scrollbars ───────────────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, .1);
+  border-radius: 4px;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
 
 /* ── Contenteditable placeholder ─────────────────────────────────────────── */
-[contenteditable]:focus { outline: none; }
+[contenteditable]:focus {
+  outline: none;
+}
+
 [contenteditable]:empty::before {
   content: attr(data-placeholder);
-  color: rgba(100,122,171,.45);
+  color: rgba(100, 122, 171, .45);
   pointer-events: none;
 }
 
-/* ── Glass utility ────────────────────────────────────────────────────────── */
+/* ── Input placeholder colour (for dashboard search) ─────────────────────── */
+input::placeholder {
+  color: #666666;
+}
+
+/* ── Glass card (editor + version history panel) ─────────────────────────── */
 .glass {
-  background: rgba(255,255,255,.03);
+  background: rgba(255, 255, 255, .03);
   backdrop-filter: blur(20px);
-  border: 1px solid rgba(255,255,255,.10);
+  border: 1px solid rgba(255, 255, 255, .08);
 }
 
-/* ── Shimmer (dashboard cards) ────────────────────────────────────────────── */
+/* ── Shimmer bars (recent doc preview cards) ──────────────────────────────── */
 @keyframes shimmer {
-  0%   { background-position: -200% 0; }
-  100% { background-position:  200% 0; }
+  0% {
+    background-position: -200% 0;
+  }
+
+  100% {
+    background-position: 200% 0;
+  }
 }
+
 .shimmer-bar {
-  background: linear-gradient(90deg,rgba(255,255,255,0) 0%,rgba(255,255,255,.06) 50%,rgba(255,255,255,0) 100%);
+  background: linear-gradient(90deg,
+      rgba(255, 255, 255, 0) 0%,
+      rgba(255, 255, 255, .06) 50%,
+      rgba(255, 255, 255, 0) 100%);
   background-size: 200% 100%;
-  animation: shimmer 2s infinite linear;
+  animation: shimmer 2s linear infinite;
 }
 
-/* ── Orb animations (auth + dashboard) ───────────────────────────────────── */
-@keyframes pulse-slow {
-  0%,100% { transform:scale(1) translate(0,0);        opacity:.35; }
-  50%     { transform:scale(1.1) translate(20px,-20px); opacity:.55; }
+/* ── Orb / background animations ─────────────────────────────────────────── */
+@keyframes orb-drift {
+
+  0%,
+  100% {
+    transform: translate(0, 0) scale(1);
+    opacity: .5;
+  }
+
+  33% {
+    transform: translate(40px, -60px) scale(1.15);
+    opacity: .35;
+  }
+
+  66% {
+    transform: translate(-30px, 40px) scale(.9);
+    opacity: .6;
+  }
 }
+
 @keyframes float {
-  0%   { transform:translate(0,0) scale(1);          }
-  33%  { transform:translate(30px,-50px) scale(1.1); }
-  66%  { transform:translate(-20px,20px) scale(.9);  }
-  100% { transform:translate(0,0) scale(1);          }
+  0% {
+    transform: translate(0, 0) scale(1);
+  }
+
+  33% {
+    transform: translate(30px, -50px) scale(1.1);
+  }
+
+  66% {
+    transform: translate(-20px, 20px) scale(.9);
+  }
+
+  100% {
+    transform: translate(0, 0) scale(1);
+  }
 }
+
 @keyframes drift-up {
-  0%   { transform:translateY(0);      opacity:0; }
-  50%  { opacity:.8; }
-  100% { transform:translateY(-100vh); opacity:0; }
+  0% {
+    transform: translateY(0);
+    opacity: 0;
+  }
+
+  50% {
+    opacity: .8;
+  }
+
+  100% {
+    transform: translateY(-100vh);
+    opacity: 0;
+  }
 }
 
-/* ── Version panel ────────────────────────────────────────────────────────── */
+/* ── Landing page animations ─────────────────────────────────────────────── */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(28px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slide-tab {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulse-dot {
+
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(0, 212, 255, .6);
+  }
+
+  50% {
+    box-shadow: 0 0 0 8px rgba(0, 212, 255, 0);
+  }
+}
+
+@keyframes shimmer-line {
+  0% {
+    background-position: -200% 0;
+  }
+
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+/* ── Version history panel ────────────────────────────────────────────────── */
 @keyframes slideInRight {
-  from { transform:translateX(100%); opacity:0; }
-  to   { transform:translateX(0);    opacity:1; }
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
 }
+
 @keyframes fadeUp {
-  from { opacity:0; transform:translateY(10px); }
-  to   { opacity:1; transform:translateY(0);    }
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
-/* ── Gradient shift (version panel bg) ───────────────────────────────────── */
 @keyframes gradientShift {
-  0%   { background-position:0%   50%; }
-  50%  { background-position:100% 50%; }
-  100% { background-position:0%   50%; }
+
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+
+  50% {
+    background-position: 100% 50%;
+  }
 }
 
-/* ── Cursor blink (editor remote cursors) ────────────────────────────────── */
-@keyframes blink { from,to { opacity:1 } 50% { opacity:0 } }
-.cursor-blink { animation: blink 1s step-end infinite; }
+/* ── Editor cursor blink ─────────────────────────────────────────────────── */
+@keyframes blink {
+
+  from,
+  to {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0;
+  }
+}
+
+.cursor-blink {
+  animation: blink 1s step-end infinite;
+}
+
+/* ── Global spinner ───────────────────────────────────────────────────────── */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── Scroll-reveal (landing page sections) ────────────────────────────────── */
+.scroll-section {
+  opacity: 0;
+  transform: translateY(30px);
+  transition: opacity .7s ease, transform .7s ease;
+}
+
+.scroll-section.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* ── Dashboard nav hover states ───────────────────────────────────────────── */
+.nav-item:hover {
+  background: #1c1c1c;
+  color: #f0f0f0;
+}
+
+.nav-item.active {
+  background: #1a2e22;
+  color: #22c55e;
+}

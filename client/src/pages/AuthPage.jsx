@@ -1,261 +1,599 @@
 /**
- * pages/AuthPage.jsx — New UI (Stitch v2)
- * Dark glassmorphism: animated orbs, floating particles, dot grid,
- * teal glow accents, smooth tab switcher between Login and Register.
+ * pages/AuthPage.jsx — Upgraded Landing + Auth Page
+ *
+ * Layout:
+ *  1. Fixed navbar
+ *  2. Hero section — headline, subtext, two CTAs → scrolls to auth card
+ *  3. Stats bar — 3 live numbers
+ *  4. Features section — 6 feature cards
+ *  5. How it works — 3 steps
+ *  6. Auth card — Sign In / Register (no Google OAuth)
+ *  7. Footer
+ *
+ * Design: deep dark (#080c14), teal (#00d4ff) + violet (#7c3aed) accent,
+ * Syne display font, DM Sans body, animated orbs, dot grid, scroll fade-ins.
  */
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import api from "../services/api";
 import { useAuthStore } from "../store/authSlice";
 
 const isValidEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim());
 
-const ANIM_STYLES = `
-  @keyframes pulse-slow {
-    0%,100% { transform:scale(1) translate(0,0);    opacity:.35; }
-    50%      { transform:scale(1.1) translate(20px,-20px); opacity:.55; }
+/* ─── Global styles injected once ─────────────────────────────────────── */
+const STYLES = `
+  @import url('https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@400;500;600&display=swap');
+
+  :root {
+    --bg:      #080c14;
+    --card:    rgba(255,255,255,.04);
+    --border:  rgba(255,255,255,.08);
+    --teal:    #00d4ff;
+    --violet:  #7c3aed;
+    --text:    #e2e8f0;
+    --muted:   rgba(255,255,255,.4);
   }
-  @keyframes drift-up {
-    0%   { transform:translateY(0);       opacity:0; }
-    50%  { opacity:.8; }
-    100% { transform:translateY(-100vh);  opacity:0; }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body { background: var(--bg); color: var(--text); font-family: 'DM Sans', sans-serif; }
+
+  @keyframes orb-drift {
+    0%,100% { transform: translate(0,0) scale(1);          opacity:.5; }
+    33%      { transform: translate(40px,-60px) scale(1.15); opacity:.35;}
+    66%      { transform: translate(-30px,40px) scale(.9);   opacity:.6; }
   }
-  @keyframes slide-up {
-    from { opacity:0; transform:translateY(14px); }
+  @keyframes fade-up {
+    from { opacity:0; transform:translateY(28px); }
     to   { opacity:1; transform:translateY(0);    }
   }
-  .orb       { animation: pulse-slow 8s ease-in-out infinite alternate; }
-  .particle  { position:absolute; border-radius:50%; filter:blur(1px); animation:drift-up linear infinite; }
-  .dot-grid  { background-image:radial-gradient(rgba(255,255,255,.05) 1px,transparent 1px); background-size:24px 24px; }
-  .form-anim { animation:slide-up .25s ease both; }
-  .tab-line::after {
-    content:''; position:absolute; bottom:-1px; left:0; width:100%; height:2px;
-    background:#00d4ff; box-shadow:0 0 8px rgba(0,212,255,.7);
+  @keyframes pulse-dot {
+    0%,100% { box-shadow: 0 0 0 0 rgba(0,212,255,.6); }
+    50%     { box-shadow: 0 0 0 8px rgba(0,212,255,0); }
   }
+  @keyframes count-up {
+    from { opacity:0; transform:scale(.8); }
+    to   { opacity:1; transform:scale(1);  }
+  }
+  @keyframes slide-tab {
+    from { opacity:0; transform:translateY(8px); }
+    to   { opacity:1; transform:translateY(0);   }
+  }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  @keyframes shimmer-line {
+    0%   { background-position:-200% 0; }
+    100% { background-position:200% 0;  }
+  }
+
+  .orb { position:absolute; border-radius:50%; filter:blur(110px); animation:orb-drift ease-in-out infinite; }
+  .dot-grid { background-image:radial-gradient(rgba(255,255,255,.05) 1px,transparent 1px); background-size:28px 28px; }
+  .glass { background:var(--card); backdrop-filter:blur(24px); border:1px solid var(--border); }
+  .fade-in { animation:fade-up .7s ease both; }
+  .gradient-text {
+    background:linear-gradient(135deg,var(--teal),#a78bfa,var(--teal));
+    background-size:200%;
+    -webkit-background-clip:text; -webkit-text-fill-color:transparent;
+    animation:shimmer-line 4s linear infinite;
+  }
+  .feature-card:hover {
+    border-color:rgba(0,212,255,.25)!important;
+    transform:translateY(-4px);
+    box-shadow:0 20px 50px rgba(0,212,255,.08);
+  }
+  .feature-card { transition:all .3s ease; }
+  .step-line::before {
+    content:''; position:absolute; top:24px; left:calc(50% + 28px);
+    width:calc(100% - 56px); height:1px;
+    background:linear-gradient(to right,rgba(0,212,255,.3),transparent);
+  }
+  .btn-primary {
+    background:linear-gradient(135deg,var(--teal),var(--violet));
+    color:#fff; font-weight:700; border:none; cursor:pointer;
+    transition:transform .2s,box-shadow .2s;
+  }
+  .btn-primary:hover { transform:scale(1.03); box-shadow:0 8px 30px rgba(0,212,255,.35); }
+  .btn-primary:active { transform:scale(.97); }
+  .btn-primary:disabled { opacity:.6; cursor:not-allowed; transform:none; }
+  .btn-outline {
+    background:transparent; border:1px solid var(--border);
+    color:var(--text); cursor:pointer; font-weight:600;
+    transition:border-color .2s,background .2s;
+  }
+  .btn-outline:hover { border-color:rgba(0,212,255,.4); background:rgba(0,212,255,.05); }
+  .input-field {
+    width:100%; background:rgba(255,255,255,.04);
+    border:none; border-bottom:2px solid rgba(255,255,255,.1);
+    color:var(--text); outline:none; font-family:'DM Sans',sans-serif;
+    transition:border-color .2s;
+  }
+  .input-field:focus { border-color:var(--teal); }
+  .input-field::placeholder { color:rgba(255,255,255,.25); }
+  .tab-active { color:#fff; position:relative; }
+  .tab-active::after {
+    content:''; position:absolute; bottom:-4px; left:0; width:100%; height:2px;
+    background:var(--teal); box-shadow:0 0 10px var(--teal);
+  }
+  .tab-inactive { color:var(--muted); cursor:pointer; }
+  .tab-inactive:hover { color:rgba(255,255,255,.7); }
+  .scroll-section { opacity:0; transform:translateY(30px); transition:opacity .7s ease, transform .7s ease; }
+  .scroll-section.visible { opacity:1; transform:translateY(0); }
+  ::-webkit-scrollbar { width:4px; } ::-webkit-scrollbar-thumb { background:rgba(255,255,255,.1); border-radius:4px; }
+  ::selection { background:rgba(0,212,255,.25); }
 `;
 
-const PARTICLES = [
-  { cls:"w-1 h-1",     l:"10%", d:"15s", dl:"0s"   },
-  { cls:"w-1.5 h-1.5", l:"25%", d:"20s", dl:"-3s"  },
-  { cls:"w-1 h-1",     l:"45%", d:"18s", dl:"-7s"  },
-  { cls:"w-2 h-2",     l:"65%", d:"22s", dl:"-12s" },
-  { cls:"w-1 h-1",     l:"85%", d:"16s", dl:"-5s"  },
-  { cls:"w-1.5 h-1.5", l:"15%", d:"25s", dl:"-10s" },
-  { cls:"w-1 h-1",     l:"75%", d:"19s", dl:"-2s"  },
-  { cls:"w-2 h-2",     l:"55%", d:"28s", dl:"-15s" },
+/* ─── FEATURES data ────────────────────────────────────────────────────── */
+const FEATURES = [
+  { icon: "bolt", title: "Sub-50ms Sync", desc: "Operational Transformation engine resolves every conflict in under 50 milliseconds — edits appear instantly across all connected clients." },
+  { icon: "group", title: "Live Cursors", desc: "See every collaborator's cursor and selection in real time. Colour-coded presence avatars show exactly who is editing what." },
+  { icon: "history", title: "Version History", desc: "Full operation log with point-in-time restore. Replay any snapshot and bring a document back to exactly how it was." },
+  { icon: "lock", title: "JWT Auth", desc: "Secure token-based authentication with bcrypt password hashing. Sessions stored in Redis with automatic expiry." },
+  { icon: "hub", title: "Redis Pub/Sub", desc: "Multi-node horizontal scaling via Redis pub/sub. Add more server instances behind Nginx — zero downtime, zero data loss." },
+  { icon: "description", title: "Smart Documents", desc: "Auto-save, archive, search by content, collaborator management, and status tracking — everything a modern document needs." },
 ];
 
-function InputField({ label, type="text", placeholder, value, onChange, error, icon, right }) {
+/* ─── HOW IT WORKS ─────────────────────────────────────────────────────── */
+const STEPS = [
+  { n: "01", title: "Create a document", desc: "Hit the + button. Your document is live in under a second and ready to share." },
+  { n: "02", title: "Share the link", desc: "Copy the editor URL and send it. Anyone with the link and an account can join instantly." },
+  { n: "03", title: "Edit together", desc: "Type simultaneously. OT handles every conflict — no overwrites, no lost work, ever." },
+];
+
+/* ─── STATS ─────────────────────────────────────────────────────────────── */
+const STATS = [
+  { value: "< 50ms", label: "Edit latency" },
+  { value: "∞", label: "Concurrent editors" },
+  { value: "100%", label: "Conflict-free merges" },
+];
+
+/* ─── Scroll observer hook ──────────────────────────────────────────────── */
+function useScrollReveal() {
+  useEffect(() => {
+    const els = document.querySelectorAll(".scroll-section");
+    const io = new IntersectionObserver(
+      (entries) => entries.forEach((e) => { if (e.isIntersecting) e.target.classList.add("visible"); }),
+      { threshold: 0.12 }
+    );
+    els.forEach((el) => io.observe(el));
+    return () => io.disconnect();
+  }, []);
+}
+
+/* ─── Field ─────────────────────────────────────────────────────────────── */
+function Field({ label, type = "text", placeholder, value, onChange, error, icon, right }) {
   return (
-    <div className="space-y-1.5">
-      <div className="flex justify-between items-end">
-        <label className="block text-white/60 text-[11px] font-bold uppercase tracking-wider ml-1">{label}</label>
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
+        <label style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--muted)" }}>{label}</label>
         {right}
       </div>
-      <div className="relative group">
+      <div style={{ position: "relative" }}>
         {icon && (
-          <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-white/40 text-xl transition-colors group-focus-within:text-[#00d4ff]">
+          <span className="material-symbols-outlined" style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: "rgba(255,255,255,.3)", fontSize: 18 }}>
             {icon}
           </span>
         )}
         <input
-          type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
-          className={`w-full bg-white/5 border-b-2 text-white py-3 outline-none transition-all duration-300 placeholder:text-white/25 text-sm
-            ${icon ? "pl-11" : "pl-4"}
-            ${error ? "border-red-500/70" : "border-white/10 focus:border-[#00d4ff]"}`}
+          type={type} value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          className="input-field"
+          style={{ padding: icon ? "12px 12px 12px 40px" : "12px 12px", fontSize: 14, borderRadius: 0 }}
         />
       </div>
-      {error && <p className="text-red-400 text-[10px] font-medium ml-1 mt-0.5">{error}</p>}
+      {error && <p style={{ color: "#f87171", fontSize: 11, fontWeight: 600 }}>{error}</p>}
     </div>
   );
 }
 
-function GradientBtn({ children, loading }) {
+/* ─── Spinner ───────────────────────────────────────────────────────────── */
+function Spinner() {
   return (
-    <button type="submit" disabled={loading}
-      className="w-full mt-2 py-3.5 rounded-xl text-white font-bold text-sm tracking-widest uppercase
-        bg-gradient-to-r from-[#00d4ff] to-[#7c3aed]
-        shadow-[0_4px_24px_rgba(0,212,255,0.35)]
-        hover:scale-[1.02] active:scale-95 transition-all duration-300
-        disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-    >
-      {loading ? (
-        <><svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
-          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-        </svg>Processing…</>
-      ) : children}
-    </button>
+    <svg style={{ animation: "spin .8s linear infinite", width: 16, height: 16 }} viewBox="0 0 24 24" fill="none">
+      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" style={{ opacity: .25 }} />
+      <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" style={{ opacity: .75 }} />
+    </svg>
   );
 }
 
+/* ─── Login Form ────────────────────────────────────────────────────────── */
 function LoginForm({ onSwitch }) {
-  const [email, setEmail]       = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [errors, setErrors]     = useState({});
-  const [loading, setLoading]   = useState(false);
-  const [serverErr, setServerErr] = useState("");
-  const login    = useAuthStore((s) => s.login);
+  const [errors, setErrors] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+  const login = useAuthStore((s) => s.login);
   const navigate = useNavigate();
-  const from     = useLocation().state?.from ?? "/";
+  const from = useLocation().state?.from ?? "/";
 
-  const handleSubmit = async (e) => {
-    e.preventDefault(); setServerErr("");
-    const errs = {};
-    if (!isValidEmail(email)) errs.email = "Please enter a valid email.";
-    if (!password) errs.password = "Password is required.";
-    setErrors(errs);
-    if (Object.keys(errs).length) return;
+  const submit = async (e) => {
+    e.preventDefault(); setErr("");
+    const v = {};
+    if (!isValidEmail(email)) v.email = "Enter a valid email.";
+    if (!password) v.password = "Password is required.";
+    setErrors(v);
+    if (Object.keys(v).length) return;
     setLoading(true);
     try {
       const { data } = await api.post("/auth/login", { email, password });
       login(data); navigate(from, { replace: true });
-    } catch (err) { setServerErr(err?.response?.data?.message ?? "Invalid credentials."); }
+    } catch (ex) { setErr(ex?.response?.data?.message ?? "Invalid credentials."); }
     finally { setLoading(false); }
   };
 
   return (
-    <form className="space-y-5 form-anim" onSubmit={handleSubmit} noValidate>
-      {serverErr && <div className="rounded-xl bg-red-500/10 border border-red-500/20 px-4 py-3 text-red-400 text-sm">{serverErr}</div>}
-      <InputField label="Email Address" type="email" placeholder="name@company.com" icon="mail" value={email} onChange={setEmail} error={errors.email} />
-      <InputField label="Password" type="password" placeholder="••••••••" icon="lock" value={password} onChange={setPassword} error={errors.password}
-        right={<a href="#" className="text-[#00d4ff] text-[11px] hover:underline">Forgot password?</a>}
+    <form onSubmit={submit} noValidate style={{ display: "flex", flexDirection: "column", gap: 20, animation: "slide-tab .25s ease both" }}>
+      {err && (
+        <div style={{ background: "rgba(248,113,113,.1)", border: "1px solid rgba(248,113,113,.25)", borderRadius: 10, padding: "12px 16px", color: "#f87171", fontSize: 13 }}>
+          {err}
+        </div>
+      )}
+      <Field label="Email Address" type="email" placeholder="name@company.com" icon="mail"
+        value={email} onChange={setEmail} error={errors.email} />
+      <Field label="Password" type="password" placeholder="••••••••" icon="lock"
+        value={password} onChange={setPassword} error={errors.password}
+        right={<a href="#" style={{ color: "var(--teal)", fontSize: 12, fontWeight: 600, textDecoration: "none" }}>Forgot password?</a>}
       />
-      <GradientBtn loading={loading}>Continue</GradientBtn>
-      <div className="relative flex items-center py-1">
-        <div className="flex-grow border-t border-white/5" />
-        <span className="mx-4 text-white/30 text-[10px] uppercase font-bold tracking-widest">or</span>
-        <div className="flex-grow border-t border-white/5" />
-      </div>
-      <button type="button" className="w-full flex items-center justify-center gap-3 py-3 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 transition-all duration-300">
-        <svg className="w-5 h-5" viewBox="0 0 24 24">
-          <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
-          <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
-          <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
-          <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
-        </svg>
-        <span className="text-white/80 font-semibold text-sm">Continue with Google</span>
+      <button type="submit" className="btn-primary" disabled={loading}
+        style={{ padding: "14px", borderRadius: 12, fontSize: 13, letterSpacing: "0.08em", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+        {loading ? <><Spinner /> Signing in…</> : "CONTINUE"}
       </button>
-      <p className="text-center text-sm text-white/40 pt-1">
+      <p style={{ textAlign: "center", fontSize: 14, color: "var(--muted)" }}>
         Don't have an account?{" "}
-        <button type="button" onClick={onSwitch} className="text-[#00d4ff] font-bold hover:underline">Register</button>
+        <button type="button" onClick={onSwitch}
+          style={{ background: "none", border: "none", color: "var(--teal)", fontWeight: 700, cursor: "pointer", fontSize: 14 }}>
+          Register
+        </button>
       </p>
     </form>
   );
 }
 
+/* ─── Register Form ─────────────────────────────────────────────────────── */
 function RegisterForm({ onSwitch }) {
-  const [name, setName]         = useState("");
-  const [email, setEmail]       = useState("");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [confirm, setConfirm]   = useState("");
-  const [errors, setErrors]     = useState({});
-  const [loading, setLoading]   = useState(false);
-  const [serverErr, setServerErr] = useState("");
-  const login    = useAuthStore((s) => s.login);
+  const [confirm, setConfirm] = useState("");
+  const [errors, setErrors] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+  const login = useAuthStore((s) => s.login);
   const navigate = useNavigate();
-  const from     = useLocation().state?.from ?? "/";
+  const from = useLocation().state?.from ?? "/";
 
-  const handleSubmit = async (e) => {
-    e.preventDefault(); setServerErr("");
-    const errs = {};
-    if (!name.trim())         errs.name     = "Please enter your name.";
-    if (!isValidEmail(email)) errs.email    = "Please enter a valid email.";
-    if (password.length < 8)  errs.password = "Minimum 8 characters.";
-    if (confirm !== password)  errs.confirm  = "Passwords do not match.";
-    setErrors(errs);
-    if (Object.keys(errs).length) return;
+  const submit = async (e) => {
+    e.preventDefault(); setErr("");
+    const v = {};
+    if (!name.trim()) v.name = "Enter your full name.";
+    if (!isValidEmail(email)) v.email = "Enter a valid email.";
+    if (password.length < 8) v.password = "Minimum 8 characters.";
+    if (confirm !== password) v.confirm = "Passwords do not match.";
+    setErrors(v);
+    if (Object.keys(v).length) return;
     setLoading(true);
     try {
       const { data } = await api.post("/auth/register", { name, email, password });
       login(data); navigate(from, { replace: true });
-    } catch (err) { setServerErr(err?.response?.data?.message ?? "Registration failed."); }
+    } catch (ex) { setErr(ex?.response?.data?.message ?? "Registration failed."); }
     finally { setLoading(false); }
   };
 
   return (
-    <form className="space-y-4 form-anim" onSubmit={handleSubmit} noValidate>
-      {serverErr && <div className="rounded-xl bg-red-500/10 border border-red-500/20 px-4 py-3 text-red-400 text-sm">{serverErr}</div>}
-      <InputField label="Full Name" placeholder="John Doe" icon="person" value={name} onChange={setName} error={errors.name} />
-      <InputField label="Email Address" type="email" placeholder="name@company.com" icon="mail" value={email} onChange={setEmail} error={errors.email} />
-      <div className="grid grid-cols-2 gap-4">
-        <div className="space-y-1.5">
-          <label className="block text-white/60 text-[11px] font-bold uppercase tracking-wider ml-1">Password</label>
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••"
-            className={`w-full bg-white/5 border-b-2 text-white px-4 py-3 outline-none transition-all placeholder:text-white/25 text-sm ${errors.password ? "border-red-500/70" : "border-white/10 focus:border-[#00d4ff]"}`} />
-          {errors.password && <p className="text-red-400 text-[10px] ml-1">{errors.password}</p>}
+    <form onSubmit={submit} noValidate style={{ display: "flex", flexDirection: "column", gap: 16, animation: "slide-tab .25s ease both" }}>
+      {err && (
+        <div style={{ background: "rgba(248,113,113,.1)", border: "1px solid rgba(248,113,113,.25)", borderRadius: 10, padding: "12px 16px", color: "#f87171", fontSize: 13 }}>
+          {err}
         </div>
-        <div className="space-y-1.5">
-          <label className="block text-white/60 text-[11px] font-bold uppercase tracking-wider ml-1">Confirm</label>
+      )}
+      <Field label="Full Name" placeholder="John Doe" icon="person"
+        value={name} onChange={setName} error={errors.name} />
+      <Field label="Email Address" type="email" placeholder="name@company.com" icon="mail"
+        value={email} onChange={setEmail} error={errors.email} />
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <label style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--muted)" }}>Password</label>
+          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••"
+            className="input-field" style={{ padding: "12px", fontSize: 14 }} />
+          {errors.password && <p style={{ color: "#f87171", fontSize: 11 }}>{errors.password}</p>}
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <label style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--muted)" }}>Confirm</label>
           <input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder="••••••••"
-            className={`w-full bg-white/5 border-b-2 text-white px-4 py-3 outline-none transition-all placeholder:text-white/25 text-sm ${errors.confirm ? "border-red-500/70" : "border-white/10 focus:border-[#00d4ff]"}`} />
-          {errors.confirm && <p className="text-red-400 text-[10px] ml-1">{errors.confirm}</p>}
+            className="input-field" style={{ padding: "12px", fontSize: 14 }} />
+          {errors.confirm && <p style={{ color: "#f87171", fontSize: 11 }}>{errors.confirm}</p>}
         </div>
       </div>
-      <GradientBtn loading={loading}>Create Account</GradientBtn>
-      <p className="text-center text-[10px] text-white/30 uppercase tracking-widest leading-relaxed">
+      <button type="submit" className="btn-primary" disabled={loading}
+        style={{ padding: "14px", borderRadius: 12, fontSize: 13, letterSpacing: "0.08em", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 4 }}>
+        {loading ? <><Spinner /> Creating account…</> : "CREATE ACCOUNT"}
+      </button>
+      <p style={{ textAlign: "center", fontSize: 11, color: "rgba(255,255,255,.25)", textTransform: "uppercase", letterSpacing: "0.06em", lineHeight: 1.6 }}>
         By registering, you agree to our Terms and data policies.
       </p>
-      <p className="text-center text-sm text-white/40">
+      <p style={{ textAlign: "center", fontSize: 14, color: "var(--muted)" }}>
         Already have an account?{" "}
-        <button type="button" onClick={onSwitch} className="text-[#00d4ff] font-bold hover:underline">Sign In</button>
+        <button type="button" onClick={onSwitch}
+          style={{ background: "none", border: "none", color: "var(--teal)", fontWeight: 700, cursor: "pointer", fontSize: 14 }}>
+          Sign In
+        </button>
       </p>
     </form>
   );
 }
 
+/* ─── ROOT ──────────────────────────────────────────────────────────────── */
 export default function AuthPage() {
   const [view, setView] = useState("login");
+  const authRef = useRef(null);
+  useScrollReveal();
+
+  const scrollToAuth = () => authRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+
   return (
-    <div className="min-h-screen relative flex flex-col items-center justify-center overflow-hidden" style={{ background:"#0a0f1e", fontFamily:"Manrope,sans-serif" }}>
-      <style>{ANIM_STYLES}</style>
+    <div style={{ minHeight: "100vh", background: "var(--bg)", fontFamily: "'DM Sans',sans-serif", overflowX: "hidden" }}>
+      <style>{STYLES}</style>
 
-      {/* Orbs */}
-      <div className="fixed inset-0 pointer-events-none z-0">
-        <div className="orb absolute top-[-10%] left-[-10%] w-[50vw] h-[50vw] rounded-full" style={{ background:"#00d4ff", filter:"blur(120px)", opacity:.4 }} />
-        <div className="orb absolute bottom-[-10%] right-[-10%] w-[45vw] h-[45vw] rounded-full" style={{ background:"#7c3aed", filter:"blur(120px)", opacity:.35, animationDelay:"-2s" }} />
-        <div className="orb absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[40vw] h-[40vw] rounded-full" style={{ background:"#4f46e5", filter:"blur(120px)", opacity:.28, animationDelay:"-4s" }} />
+      {/* ── Background orbs (fixed) ──────────────────────────────────────── */}
+      <div style={{ position: "fixed", inset: 0, pointerEvents: "none", zIndex: 0, overflow: "hidden" }}>
+        <div className="orb" style={{ width: 700, height: 700, top: "-20%", left: "-15%", background: "#0ea5e9", opacity: .25, animationDuration: "22s" }} />
+        <div className="orb" style={{ width: 600, height: 600, bottom: "-15%", right: "-10%", background: "#7c3aed", opacity: .25, animationDuration: "28s", animationDelay: "-8s" }} />
+        <div className="orb" style={{ width: 400, height: 400, top: "40%", left: "45%", background: "#06b6d4", opacity: .15, animationDuration: "18s", animationDelay: "-4s" }} />
+        <div className="dot-grid" style={{ position: "absolute", inset: 0, opacity: .4 }} />
       </div>
 
-      {/* Dot grid */}
-      <div className="fixed inset-0 dot-grid opacity-30 z-0 pointer-events-none" />
+      {/* ── Navbar ───────────────────────────────────────────────────────── */}
+      <nav style={{
+        position: "fixed", top: 0, width: "100%", zIndex: 100,
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        padding: "0 48px", height: 68,
+        background: "rgba(8,12,20,.85)", backdropFilter: "blur(20px)",
+        borderBottom: "1px solid rgba(255,255,255,.06)",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{
+            width: 34, height: 34, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center",
+            background: "linear-gradient(135deg,#00d4ff,#7c3aed)", boxShadow: "0 0 20px rgba(0,212,255,.4)",
+          }}>
+            <span className="material-symbols-outlined" style={{ color: "#fff", fontSize: 20, fontVariationSettings: "'FILL' 1" }}>description</span>
+          </div>
+          <span style={{
+            fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 20, letterSpacing: "-.02em",
+            background: "linear-gradient(to right,#00d4ff,#a78bfa)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent"
+          }}>
+            CollabDocs
+          </span>
+        </div>
 
-      {/* Particles */}
-      <div className="fixed inset-0 pointer-events-none z-0">
-        {PARTICLES.map((p, i) => (
-          <div key={i} className={`particle ${p.cls} bg-white`} style={{ left:p.l, bottom:"-5%", animationDuration:p.d, animationDelay:p.dl }} />
-        ))}
-      </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <button onClick={() => { setView("login"); scrollToAuth(); }} className="btn-outline"
+            style={{ padding: "8px 20px", borderRadius: 8, fontSize: 13, fontFamily: "'DM Sans',sans-serif" }}>
+            Sign In
+          </button>
+          <button onClick={() => { setView("register"); scrollToAuth(); }} className="btn-primary"
+            style={{ padding: "8px 20px", borderRadius: 8, fontSize: 13, fontFamily: "'DM Sans',sans-serif" }}>
+            Get Started
+          </button>
+        </div>
+      </nav>
 
-      {/* Navbar */}
-      <header className="fixed top-0 w-full border-b border-white/10 z-50 flex justify-between items-center px-10 h-20"
-        style={{ background:"rgba(255,255,255,0.05)", backdropFilter:"blur(20px)" }}>
-        <div className="text-xl font-black tracking-tighter text-white" style={{ textShadow:"0 0 8px rgba(0,212,255,0.4)" }}>CollabDocs</div>
-        <a href="#" className="hidden md:block text-sm uppercase tracking-widest text-white/50 hover:text-white transition-colors">Support</a>
-      </header>
+      {/* ── Hero ─────────────────────────────────────────────────────────── */}
+      <section style={{ position: "relative", zIndex: 1, minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "120px 24px 80px", textAlign: "center" }}>
 
-      {/* Card */}
-      <main className="relative z-10 w-full max-w-[420px] px-6 mt-16">
-        <div className="rounded-2xl p-10 shadow-[0_0_50px_rgba(0,0,0,0.4)]"
-          style={{ background:"rgba(255,255,255,0.05)", backdropFilter:"blur(20px)", border:"1px solid rgba(255,255,255,0.1)" }}>
+        {/* Live badge */}
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 8, background: "rgba(0,212,255,.08)", border: "1px solid rgba(0,212,255,.2)", borderRadius: 40, padding: "6px 16px", marginBottom: 32 }}>
+          <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#00d4ff", animation: "pulse-dot 1.8s infinite" }} />
+          <span style={{ fontSize: 12, fontWeight: 700, color: "var(--teal)", letterSpacing: "0.08em", textTransform: "uppercase" }}>
+            Real-time Collaboration — Live Now
+          </span>
+        </div>
 
-          {/* Logo */}
-          <div className="flex flex-col items-center mb-8">
-            <div className="w-12 h-12 rounded-xl flex items-center justify-center mb-4"
-              style={{ background:"rgba(0,212,255,0.2)", border:"1px solid rgba(0,212,255,0.3)", boxShadow:"0 0 15px rgba(0,212,255,0.25)" }}>
-              <span className="material-symbols-outlined text-[#00d4ff] text-3xl" style={{ fontVariationSettings:"'FILL' 1" }}>description</span>
+        {/* Headline */}
+        <h1 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: "clamp(32px,4vw,58px)", lineHeight: 1.15, letterSpacing: "-.01em", maxWidth: 820, marginBottom: 24 }}>
+          Write Together,{" "}
+          <span className="gradient-text">Think Together</span>
+          {" "}— In Real Time.
+        </h1>
+
+        <p style={{ fontSize: "clamp(15px,1.5vw,20px)", color: "var(--muted)", maxWidth: 580, lineHeight: 1.75, marginBottom: 48 }}>
+          CollabDocs is a Google Docs-style collaborative editor powered by
+          Operational Transformation — resolving every concurrent edit conflict
+          in under 50 milliseconds, across as many users as you need.
+        </p>
+
+        {/* CTAs */}
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", justifyContent: "center", marginBottom: 80 }}>
+          <button onClick={() => { setView("register"); scrollToAuth(); }} className="btn-primary"
+            style={{ padding: "16px 36px", borderRadius: 12, fontSize: 15, fontFamily: "'DM Sans',sans-serif", display: "flex", alignItems: "center", gap: 8 }}>
+            Start Writing Free
+            <span className="material-symbols-outlined" style={{ fontSize: 18 }}>arrow_forward</span>
+          </button>
+          <button onClick={() => { setView("login"); scrollToAuth(); }} className="btn-outline"
+            style={{ padding: "16px 36px", borderRadius: 12, fontSize: 15, fontFamily: "'DM Sans',sans-serif" }}>
+            Sign In
+          </button>
+        </div>
+
+        {/* Hero visual — mini editor mock */}
+        <div className="glass fade-in" style={{
+          maxWidth: 780, width: "100%", borderRadius: 20, overflow: "hidden",
+          boxShadow: "0 40px 100px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.06)",
+          animationDelay: ".4s",
+        }}>
+          {/* Fake browser chrome */}
+          <div style={{ padding: "12px 20px", background: "rgba(255,255,255,.03)", borderBottom: "1px solid rgba(255,255,255,.07)", display: "flex", alignItems: "center", gap: 8 }}>
+            {["#f87171", "#fb923c", "#4ade80"].map((c, i) => (
+              <div key={i} style={{ width: 11, height: 11, borderRadius: "50%", background: c, opacity: .7 }} />
+            ))}
+            <div style={{ flex: 1, height: 24, background: "rgba(255,255,255,.04)", borderRadius: 6, marginLeft: 12, maxWidth: 300 }} />
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              {["JA", "SR", "MK"].map((init, i) => (
+                <div key={i} style={{
+                  width: 24, height: 24, borderRadius: "50%", border: "2px solid var(--bg)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 800, color: "#fff",
+                  background: ["#00d4ff", "#7c3aed", "#f59e0b"][i], boxShadow: `0 0 0 2px ${["#00d4ff", "#7c3aed", "#f59e0b"][i]}50`
+                }}>
+                  {init}
+                </div>
+              ))}
+              <span style={{ fontSize: 11, color: "var(--muted)", marginLeft: 4 }}>3 online</span>
             </div>
-            <h1 className="text-white text-[28px] font-black tracking-tight">CollabDocs</h1>
+          </div>
+          {/* Fake editor content */}
+          <div style={{ padding: "36px 48px", minHeight: 200, textAlign: "left" }}>
+            <div style={{ fontFamily: "'Syne',sans-serif", fontSize: 22, fontWeight: 700, color: "var(--text)", marginBottom: 20 }}>
+              Q4 Product Strategy 2024
+            </div>
+
+            {/* Line 1 — full */}
+            <div style={{ height: 10, background: "rgba(255,255,255,.07)", borderRadius: 4, width: "100%", marginBottom: 10 }} />
+
+            {/* Line 2 — SR cursor sits here */}
+            <div style={{ position: "relative", marginBottom: 10 }}>
+              <div style={{ height: 10, background: "rgba(255,255,255,.07)", borderRadius: 4, width: "85%" }} />
+              <div style={{ position: "absolute", top: -18, left: "40%", display: "inline-flex", flexDirection: "column", alignItems: "flex-start" }}>
+                <div style={{ background: "#7c3aed", color: "#fff", fontSize: 9, fontWeight: 800, padding: "2px 8px", borderRadius: 4, marginBottom: 2, whiteSpace: "nowrap" }}>Sarah</div>
+                <div style={{ width: 2, height: 18, background: "#7c3aed", boxShadow: "0 0 6px #7c3aed", animation: "pulse-dot 1.5s infinite" }} />
+              </div>
+            </div>
+
+            {/* Lines 3-5 */}
+            {[92, 70, 100].map((w, i) => (
+              <div key={i} style={{ height: 10, background: "rgba(255,255,255,.07)", borderRadius: 4, width: `${w}%`, marginBottom: 10 }} />
+            ))}
+
+            {/* Line 6 — Jaideep cursor */}
+            <div style={{ height: 10, background: "rgba(255,255,255,.07)", borderRadius: 4, width: "45%", marginBottom: 10 }} />
+
+            {/* Jaideep cursor at end of last line */}
+            <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-start", marginTop: 4 }}>
+              <div style={{ background: "#00d4ff", color: "#003642", fontSize: 9, fontWeight: 800, padding: "2px 8px", borderRadius: 4, marginBottom: 2 }}>Jaideep</div>
+              <div style={{ width: 2, height: 18, background: "#00d4ff", boxShadow: "0 0 6px #00d4ff", animation: "pulse-dot 1.2s infinite" }} />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ── Stats bar ────────────────────────────────────────────────────── */}
+      <section className="scroll-section" style={{ position: "relative", zIndex: 1, padding: "0 24px 100px" }}>
+        <div style={{ maxWidth: 800, margin: "0 auto", display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 1, borderRadius: 20, overflow: "hidden", border: "1px solid var(--border)" }}>
+          {STATS.map((s, i) => (
+            <div key={i} className="glass" style={{ padding: "40px 24px", textAlign: "center", borderRadius: 0 }}>
+              <div style={{
+                fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 42, lineHeight: 1, marginBottom: 12,
+                background: "linear-gradient(135deg,var(--teal),#a78bfa)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent"
+              }}>
+                {s.value}
+              </div>
+              <div style={{ fontSize: 13, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.08em" }}>{s.label}</div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* ── Features ─────────────────────────────────────────────────────── */}
+      <section className="scroll-section" style={{ position: "relative", zIndex: 1, padding: "0 24px 120px" }}>
+        <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+          <div style={{ textAlign: "center", marginBottom: 64 }}>
+            <p style={{ fontSize: 12, fontWeight: 700, color: "var(--teal)", textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 16 }}>
+              Why CollabDocs
+            </p>
+            <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: "clamp(24px,2.8vw,40px)", letterSpacing: "-.01em" }}>
+              Built for speed. Designed for teams.
+            </h2>
           </div>
 
-          {/* Tabs */}
-          <div className="flex border-b border-white/5 mb-8 relative">
-            {["login","register"].map((t) => (
-              <button key={t} onClick={() => setView(t)}
-                className={`flex-1 py-3 font-semibold text-center relative transition-all duration-300 capitalize
-                  ${view === t ? "text-white tab-line" : "text-white/40 hover:text-white/60"}`}>
-                {t === "login" ? "Sign In" : "Register"}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(300px,1fr))", gap: 20 }}>
+            {FEATURES.map((f, i) => (
+              <div key={i} className="glass feature-card" style={{ padding: "32px", borderRadius: 20, cursor: "default" }}>
+                <div style={{
+                  width: 44, height: 44, borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 20,
+                  background: "linear-gradient(135deg,rgba(0,212,255,.15),rgba(124,58,237,.15))",
+                  border: "1px solid rgba(0,212,255,.2)"
+                }}>
+                  <span className="material-symbols-outlined" style={{ color: "var(--teal)", fontSize: 22 }}>{f.icon}</span>
+                </div>
+                <h3 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 18, marginBottom: 10, letterSpacing: "-.01em" }}>{f.title}</h3>
+                <p style={{ fontSize: 14, color: "var(--muted)", lineHeight: 1.75 }}>{f.desc}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── How it works ─────────────────────────────────────────────────── */}
+      <section className="scroll-section" style={{ position: "relative", zIndex: 1, padding: "0 24px 120px" }}>
+        <div style={{ maxWidth: 900, margin: "0 auto" }}>
+          <div style={{ textAlign: "center", marginBottom: 64 }}>
+            <p style={{ fontSize: 12, fontWeight: 700, color: "var(--teal)", textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 16 }}>Simple by Design</p>
+            <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: "clamp(24px,2.8vw,40px)", letterSpacing: "-.01em" }}>
+              Up and running in 30 seconds
+            </h2>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 48, position: "relative" }}>
+            {STEPS.map((s, i) => (
+              <div key={i} style={{ textAlign: "center", position: "relative" }}>
+                {i < STEPS.length - 1 && (
+                  <div style={{
+                    position: "absolute", top: 24, left: "calc(50% + 28px)", width: "calc(100% - 56px)", height: 1,
+                    background: "linear-gradient(to right,rgba(0,212,255,.3),transparent)"
+                  }} />
+                )}
+                <div style={{
+                  width: 52, height: 52, borderRadius: "50%", margin: "0 auto 24px",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  background: "linear-gradient(135deg,rgba(0,212,255,.2),rgba(124,58,237,.2))",
+                  border: "1px solid rgba(0,212,255,.3)",
+                  fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 16, color: "var(--teal)"
+                }}>
+                  {s.n}
+                </div>
+                <h3 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 17, marginBottom: 12 }}>{s.title}</h3>
+                <p style={{ fontSize: 14, color: "var(--muted)", lineHeight: 1.7 }}>{s.desc}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── Auth card ────────────────────────────────────────────────────── */}
+      <section ref={authRef} className="scroll-section" style={{ position: "relative", zIndex: 1, padding: "0 24px 120px", display: "flex", flexDirection: "column", alignItems: "center" }}>
+        <div style={{ textAlign: "center", marginBottom: 40 }}>
+          <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: "clamp(22px,2.5vw,36px)", letterSpacing: "-.01em", marginBottom: 12 }}>
+            Ready to collaborate?
+          </h2>
+          <p style={{ fontSize: 15, color: "var(--muted)" }}>Create your free account — no credit card required.</p>
+        </div>
+
+        <div className="glass" style={{ width: "100%", maxWidth: 440, borderRadius: 24, padding: "40px", boxShadow: "0 40px 100px rgba(0,0,0,.4)" }}>
+          {/* Logo */}
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginBottom: 32, gap: 12 }}>
+            <div style={{
+              width: 48, height: 48, borderRadius: 14, display: "flex", alignItems: "center", justifyContent: "center",
+              background: "linear-gradient(135deg,rgba(0,212,255,.2),rgba(124,58,237,.2))",
+              border: "1px solid rgba(0,212,255,.3)", boxShadow: "0 0 20px rgba(0,212,255,.2)"
+            }}>
+              <span className="material-symbols-outlined" style={{ color: "var(--teal)", fontSize: 26, fontVariationSettings: "'FILL' 1" }}>description</span>
+            </div>
+            <span style={{
+              fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 24, letterSpacing: "-.02em",
+              background: "linear-gradient(to right,#00d4ff,#a78bfa)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent"
+            }}>
+              CollabDocs
+            </span>
+          </div>
+
+          {/* Tab switcher */}
+          <div style={{ display: "flex", borderBottom: "1px solid rgba(255,255,255,.08)", marginBottom: 28, gap: 24 }}>
+            {[{ key: "login", label: "Sign In" }, { key: "register", label: "Register" }].map(({ key, label }) => (
+              <button key={key} type="button"
+                onClick={() => setView(key)}
+                className={view === key ? "tab-active" : "tab-inactive"}
+                style={{
+                  background: "none", border: "none", fontFamily: "'DM Sans',sans-serif", fontWeight: 700, fontSize: 15,
+                  paddingBottom: 12, cursor: "pointer", transition: "color .2s"
+                }}>
+                {label}
               </button>
             ))}
           </div>
@@ -265,18 +603,43 @@ export default function AuthPage() {
             : <RegisterForm onSwitch={() => setView("login")} />
           }
         </div>
-      </main>
+      </section>
 
-      {/* Footer */}
-      <footer className="fixed bottom-0 w-full py-8 z-10">
-        <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center px-10 gap-4">
-          <p className="text-white/30 text-xs tracking-widest uppercase">© 2024 CollabDocs. All rights reserved.</p>
-          <div className="flex gap-6 text-xs tracking-widest uppercase text-white/30">
-            {["Privacy Policy","Terms of Service","Security"].map((l) => (
-              <a key={l} href="#" className="hover:text-[#00d4ff] transition-colors">{l}</a>
+      {/* ── Footer ───────────────────────────────────────────────────────── */}
+      <footer style={{
+        position: "relative", zIndex: 1,
+        borderTop: "1px solid var(--border)",
+        padding: "40px 48px",
+        display: "flex", flexDirection: "column", gap: 20,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ width: 28, height: 28, borderRadius: 8, background: "linear-gradient(135deg,#00d4ff,#7c3aed)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <span className="material-symbols-outlined" style={{ color: "#fff", fontSize: 16, fontVariationSettings: "'FILL' 1" }}>description</span>
+            </div>
+            <span style={{
+              fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 16,
+              background: "linear-gradient(to right,#00d4ff,#a78bfa)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent"
+            }}>
+              CollabDocs
+            </span>
+          </div>
+          <div style={{ display: "flex", gap: 32 }}>
+            {["Privacy Policy", "Terms of Service", "Security"].map((l) => (
+              <a key={l} href="#" style={{
+                fontSize: 12, fontWeight: 600, color: "var(--muted)", textDecoration: "none", letterSpacing: "0.06em", textTransform: "uppercase",
+                transition: "color .2s"
+              }}
+                onMouseEnter={(e) => e.target.style.color = "var(--teal)"}
+                onMouseLeave={(e) => e.target.style.color = "var(--muted)"}>
+                {l}
+              </a>
             ))}
           </div>
         </div>
+        <p style={{ fontSize: 12, color: "rgba(255,255,255,.2)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+          © 2024 CollabDocs. All rights reserved.
+        </p>
       </footer>
     </div>
   );
