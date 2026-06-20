@@ -12,6 +12,7 @@ import DocumentDashboard from "./pages/DocumentDashboard";
 import MyDocumentsPage from "./pages/MyDocumentsPage";
 import SharedWithMePage from "./pages/SharedWithMePage";
 import TrashPage from "./pages/TrashPage";
+import NewDocumentPage from "./pages/NewDocumentPage";
 import EditorPage from "./pages/EditorPage";
 import { useAuthStore } from "./store/authSlice";
 
@@ -58,6 +59,9 @@ export default function App() {
           />
           <Route path="/shared"
             element={<ProtectedRoute><SharedWithMePage /></ProtectedRoute>}
+          />
+          <Route path="/new"
+            element={<ProtectedRoute><NewDocumentPage /></ProtectedRoute>}
           />
           <Route path="/trash"
             element={<ProtectedRoute><TrashPage /></ProtectedRoute>}

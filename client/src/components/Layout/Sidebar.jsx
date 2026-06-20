@@ -133,7 +133,7 @@ export default function Sidebar({ activeTab, onNewDoc }) {
 
             {/* New Document */}
             <div style={{ padding: "14px 12px 6px" }}>
-                <button onClick={onNewDoc}
+                <button onClick={() => navigate("/new")}
                     style={{
                         width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
                         background: T.primary, color: T.primFg, fontSize: 13, fontWeight: 500,
