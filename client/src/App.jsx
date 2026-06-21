@@ -12,6 +12,7 @@ import DocumentDashboard from "./pages/DocumentDashboard";
 import MyDocumentsPage from "./pages/MyDocumentsPage";
 import SharedWithMePage from "./pages/SharedWithMePage";
 import TrashPage from "./pages/TrashPage";
+import ArchivePage from "./pages/ArchivePage";
 import NewDocumentPage from "./pages/NewDocumentPage";
 import EditorPage from "./pages/EditorPage";
 import { useAuthStore } from "./store/authSlice";
@@ -65,6 +66,9 @@ export default function App() {
           />
           <Route path="/trash"
             element={<ProtectedRoute><TrashPage /></ProtectedRoute>}
+          />
+          <Route path="/archive"
+            element={<ProtectedRoute><ArchivePage /></ProtectedRoute>}
           />
           <Route path="/editor/:docId"
             element={<ProtectedRoute><EditorPage /></ProtectedRoute>}
