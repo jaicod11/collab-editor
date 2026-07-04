@@ -1,139 +1,162 @@
-/**
- * pages/EditorPage.jsx — New UI (Stitch v2)
- * Dark sidebar + white editor canvas split layout.
- * Sidebar: dark #0a0f1e with teal glow accents, gradient background.
- * Canvas: clean white with top navbar, formatting toolbar, remote cursors.
- * Bottom: dark glassmorphism floating format pill.
- * Status bar: dark with live/save indicators.
- */
-
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-
-import { useSocket }    from "../hooks/useSocket";
-import { useDocument }  from "../hooks/useDocument";
-import { useToast }     from "../components/UI/Toast";
+import { useSocket } from "../hooks/useSocket";
+import { useDocument } from "../hooks/useDocument";
+import { useToast } from "../components/UI/Toast";
 import { useAuthStore } from "../store/authSlice";
+import EditorCore from "../components/Editor/EditorCore";
+import api from "../services/api";
 
-import EditorCore          from "../components/Editor/EditorCore";
-import VersionHistoryPanel from "../components/Sidebar/VersionHistoryPanel";
+const E = {
+  bg: "#1a1a1a", fg: "#e8e8e8", border: "#2e2e2e",
+  primary: "#3ddc6e", primFg: "#0f1a13", muted: "#2a2a2a",
+  mutedFg: "#7a7a7a", surface: "#222222", sidebar: "#161616",
+  font: "'Geist','DM Sans',sans-serif",
+};
 
-const ANIM_STYLES = `
-  @keyframes blink { from,to{opacity:1} 50%{opacity:0} }
-  .cursor-blink { animation:blink 1s step-end infinite; }
-  .sidebar-grad {
-    background: radial-gradient(circle at top right,rgba(0,212,255,.05),transparent),
-                radial-gradient(circle at bottom left,rgba(96,1,209,.05),transparent);
-  }
-  .scrollbar-thin::-webkit-scrollbar { width:4px; }
-  .scrollbar-thin::-webkit-scrollbar-thumb { background:rgba(255,255,255,.1); border-radius:10px; }
-  .no-scrollbar::-webkit-scrollbar { display:none; }
-  .no-scrollbar { -ms-overflow-style:none; scrollbar-width:none; }
-`;
-
-// ─── Toolbar button ────────────────────────────────────────────────────────────
-function TBtn({ icon, label, onClick, active }) {
-  return (
-    <button title={label} onClick={onClick}
-      className={`p-1.5 rounded transition-colors ${active ? "bg-indigo-100 text-indigo-600" : "hover:bg-slate-100 text-slate-600"}`}>
-      <span className="material-symbols-outlined text-xl">{icon}</span>
-    </button>
-  );
+function initials(n) {
+  if (!n) return "?";
+  return n.split(" ").map(x => x[0]).join("").toUpperCase().slice(0, 2);
 }
 
-function TDivider() {
-  return <div className="h-6 w-px bg-slate-200 mx-1 flex-shrink-0" />;
+function fmtTime(d) {
+  if (!d) return "";
+  const dt = new Date(d), diff = Date.now() - dt;
+  if (diff < 60000) return "Just now";
+  if (diff < 3600000) return `${Math.round(diff / 60000)}m ago`;
+  if (diff < 86400000) return dt.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  return dt.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
 }
 
-// ─── Formatting toolbar ────────────────────────────────────────────────────────
-function Toolbar({ disabled }) {
-  const exec = (cmd) => { if (!disabled) document.execCommand(cmd, false, null); };
-  const block = (tag) => { if (!disabled) document.execCommand("formatBlock", false, tag); };
+function groupByDate(items) {
+  const groups = {}, now = Date.now();
+  items.forEach(a => {
+    const diff = now - new Date(a.appliedAt ?? a.createdAt ?? now);
+    const label = diff < 86400000 ? "Today" : diff < 172800000 ? "Yesterday"
+      : new Date(a.appliedAt).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }).toUpperCase();
+    if (!groups[label]) groups[label] = [];
+    groups[label].push(a);
+  });
+  return groups;
+}
 
+function Avatar({ name, size = 24, dot = false }) {
+  const cols = ["#3ddc6e", "#3b82f6", "#f59e0b", "#e05c2a", "#8b2ae0"];
+  const bg = cols[(name?.charCodeAt(0) ?? 0) % cols.length];
   return (
-    <div className="flex items-center gap-0.5 px-10 py-2.5 bg-white/50 border-b border-slate-100 overflow-x-auto no-scrollbar sticky top-16 z-30">
-      <TBtn icon="format_bold"       label="Bold"          onClick={() => exec("bold")} />
-      <TBtn icon="format_italic"     label="Italic"        onClick={() => exec("italic")} />
-      <TBtn icon="format_underlined" label="Underline"     onClick={() => exec("underline")} />
-      <TDivider />
-      <div className="flex items-center">
-        <select onChange={(e) => { if (e.target.value) { block(e.target.value); e.target.value=""; }}}
-          defaultValue=""
-          className="text-xs font-semibold text-slate-600 bg-transparent border-none outline-none cursor-pointer hover:bg-slate-100 px-2 py-1.5 rounded">
-          <option value="" disabled>Heading</option>
-          <option value="h1">H1</option>
-          <option value="h2">H2</option>
-          <option value="h3">H3</option>
-          <option value="p">Paragraph</option>
-        </select>
+    <div style={{ position: "relative", flexShrink: 0 }}>
+      <div style={{ width: size, height: size, borderRadius: "50%", background: bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: size * 0.38, fontWeight: 700, color: "#fff" }}>
+        {initials(name)}
       </div>
-      <TDivider />
-      <TBtn icon="format_list_bulleted"  label="Bullet list"   onClick={() => exec("insertUnorderedList")} />
-      <TBtn icon="format_list_numbered"  label="Numbered list" onClick={() => exec("insertOrderedList")} />
-      <TDivider />
-      <TBtn icon="format_align_left"   label="Align left"   onClick={() => exec("justifyLeft")} />
-      <TBtn icon="format_align_center" label="Align center" onClick={() => exec("justifyCenter")} />
-      <TDivider />
-      <TBtn icon="palette" label="Color" onClick={() => {}} />
+      {dot && <div style={{ position: "absolute", bottom: 0, right: 0, width: size * 0.35, height: size * 0.35, borderRadius: "50%", background: E.primary, border: `1.5px solid ${E.sidebar}` }} />}
     </div>
   );
 }
 
-// ─── Sidebar document list ─────────────────────────────────────────────────────
-function Sidebar({ docId: activeId, documents, onSelect, onNew, onClose }) {
+function TBtn({ icon, label, onClick, children }) {
+  const [hov, setHov] = useState(false);
   return (
-    <aside className="w-[260px] flex-shrink-0 flex flex-col h-full border-r border-white/5 sidebar-grad relative"
-      style={{ background:"#0a0f1e", fontFamily:"Manrope,sans-serif" }}>
+    <button title={label} onClick={onClick}
+      onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}
+      style={{ padding: "4px 5px", borderRadius: 4, border: "none", cursor: "pointer", background: hov ? "rgba(255,255,255,.07)" : "none", color: hov ? E.fg : E.mutedFg, display: "flex", alignItems: "center", justifyContent: "center", transition: "all .1s", minWidth: 26 }}>
+      {icon ? <span className="material-symbols-outlined" style={{ fontSize: 16 }}>{icon}</span>
+        : <span style={{ fontSize: 13, fontWeight: 700, fontFamily: "serif" }}>{children}</span>}
+    </button>
+  );
+}
+function TDiv() { return <div style={{ width: 1, height: 18, background: E.border, margin: "0 3px", flexShrink: 0 }} />; }
 
-      {/* Logo + collapse */}
-      <div className="p-6">
-        <div className="flex items-center justify-between gap-3 mb-8">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center"
-              style={{ background:"#00d4ff", boxShadow:"0 0 15px rgba(0,212,255,0.4)" }}>
-              <span className="material-symbols-outlined text-white text-lg"
-                style={{ fontVariationSettings:"'FILL' 1" }}>cloud_done</span>
-            </div>
-            <span className="text-xl font-black tracking-tighter text-white">CollabDocs</span>
+function MenuItem({ label }) {
+  const [h, setH] = useState(false);
+  return (
+    <button onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)}
+      style={{ padding: "3px 7px", background: h ? "rgba(255,255,255,.07)" : "none", border: "none", color: h ? E.fg : E.mutedFg, fontSize: 12, cursor: "pointer", borderRadius: 4, fontFamily: E.font }}>
+      {label}
+    </button>
+  );
+}
+
+function VersionPanel({ docId, collaborators, currentUser, onClose }) {
+  const [history, setHistory] = useState([]);
+
+  useEffect(() => {
+    if (!docId) return;
+    api.get(`/history/${docId}`)
+      .then(({ data }) => { if (Array.isArray(data.history)) setHistory(data.history); })
+      .catch(() => { });
+  }, [docId]);
+
+  const grouped = useMemo(() => {
+    if (history.length > 0) return groupByDate(history);
+    // Demo fallback
+    const now = Date.now();
+    return {
+      "Today": [{ id: "t1", author: { name: currentUser?.name ?? "You" }, description: "Created document", appliedAt: new Date() }],
+      "Yesterday": [
+        { id: "y1", author: { name: "Jordan Lee" }, description: "Added section: Goals", appliedAt: new Date(now - 90000000) },
+        { id: "y2", author: { name: "Amara Osei" }, description: "Edited introduction", appliedAt: new Date(now - 100000000) },
+        { id: "y3", author: { name: "Jordan Lee" }, description: "Renamed document", appliedAt: new Date(now - 110000000) },
+      ],
+      "MON, JUL 7": [
+        { id: "m1", author: { name: "Ravi Patel" }, description: "Inserted table", appliedAt: new Date(now - 200000000) },
+        { id: "m2", author: { name: "Amara Osei" }, description: "Added comments", appliedAt: new Date(now - 210000000) },
+      ],
+    };
+  }, [history, currentUser]);
+
+  const onlineAll = [{ name: currentUser?.name ?? "You" }, ...collaborators].slice(0, 4);
+
+  return (
+    <aside style={{ width: 280, background: E.sidebar, borderLeft: `1px solid ${E.border}`, display: "flex", flexDirection: "column", flexShrink: 0, overflowY: "auto" }}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "11px 14px", borderBottom: `1px solid ${E.border}`, flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+          <div style={{ width: 20, height: 20, background: E.primary, borderRadius: 4, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={E.primFg} strokeWidth="2.8"><path d="M12.659 22H18a2 2 0 0 0 2-2V8l-6-6H6a2 2 0 0 0-2 2v9.34" /><path d="M14 2v5a1 1 0 0 0 1 1h5" /></svg>
           </div>
-          <button onClick={onClose} className="text-white/40 hover:text-white transition-colors">
-            <span className="material-symbols-outlined text-lg">menu_open</span>
-          </button>
+          <span style={{ fontSize: 13, fontWeight: 600, color: E.fg }}>Version History</span>
         </div>
-
-        {/* New doc button */}
-        <button onClick={onNew}
-          className="w-full py-4 px-4 border-2 border-dashed border-white/10 rounded-xl mb-6 flex items-center justify-center gap-2 text-white/60 hover:border-[#00d4ff] hover:text-[#00d4ff] hover:bg-[#00d4ff]/5 transition-all duration-300 group">
-          <span className="material-symbols-outlined group-hover:scale-110 transition-transform">add_circle</span>
-          <span className="text-xs font-bold uppercase tracking-wider">+ New Document</span>
+        <button onClick={onClose}
+          style={{ background: "none", border: "none", color: E.mutedFg, cursor: "pointer", padding: 3, borderRadius: 4, display: "flex" }}
+          onMouseEnter={e => e.currentTarget.style.color = E.fg} onMouseLeave={e => e.currentTarget.style.color = E.mutedFg}>
+          <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6"><path d="M18 6 6 18M6 6l12 12" /></svg>
         </button>
-
-        {/* Doc list */}
-        <nav className="space-y-1 overflow-y-auto scrollbar-thin" style={{ maxHeight:"calc(100vh - 300px)" }}>
-          {(Array.isArray(documents) ? documents : []).map((doc) => {
-            const id = doc._id ?? doc.id ?? "";
-            const isActive = id === activeId;
-            return (
-              <div key={id} onClick={() => onSelect(id)}
-                className={`px-2 py-3 rounded-lg flex items-center gap-3 cursor-pointer transition-all
-                  ${isActive
-                    ? "bg-white/10 text-[#00d4ff] border-l-4 border-[#00d4ff]"
-                    : "text-white/40 hover:text-white/80 hover:bg-white/5 border-l-4 border-transparent"}`}
-                style={isActive ? { boxShadow:"0 0 20px rgba(0,212,255,0.1)" } : {}}>
-                <span className="material-symbols-outlined text-lg flex-shrink-0">description</span>
-                <span className="text-sm truncate font-semibold">{doc.title ?? "Untitled"}</span>
-              </div>
-            );
-          })}
-        </nav>
       </div>
 
-      {/* Bottom */}
-      <div className="mt-auto p-6 space-y-4 border-t border-white/5">
-        {[{icon:"settings",label:"Settings"},{icon:"help",label:"Support"}].map(({icon,label}) => (
-          <div key={label} className="flex items-center gap-3 text-white/40 hover:text-white transition-colors cursor-pointer">
-            <span className="material-symbols-outlined text-lg">{icon}</span>
-            <span className="text-xs font-bold uppercase tracking-widest">{label}</span>
+      {/* Online Now */}
+      <div style={{ padding: "10px 14px", borderBottom: `1px solid ${E.border}`, flexShrink: 0 }}>
+        <p style={{ fontSize: 10, fontWeight: 600, color: E.mutedFg, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>Online Now</p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+          {onlineAll.map((c, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <Avatar name={c.name} size={24} dot />
+              <span style={{ fontSize: 12, color: E.fg, flex: 1 }}>{c.name}</span>
+              <span style={{ fontSize: 11, color: E.primary, fontWeight: 500 }}>Editing</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Activity timeline */}
+      <div style={{ flex: 1, overflowY: "auto", padding: "6px 0" }}>
+        {Object.entries(grouped).map(([label, entries]) => (
+          <div key={label} style={{ marginBottom: 2 }}>
+            <p style={{ fontSize: 10, fontWeight: 600, color: E.mutedFg, textTransform: "uppercase", letterSpacing: "0.1em", padding: "8px 14px 3px" }}>{label}</p>
+            {entries.map(entry => (
+              <div key={entry.id}
+                style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "6px 14px", transition: "background .1s", cursor: "default" }}
+                onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,.03)"}
+                onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                <Avatar name={entry.author?.name} size={22} dot />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 12, fontWeight: 500, color: E.fg }}>{entry.author?.name ?? "Unknown"}</span>
+                    <span style={{ fontSize: 10, color: E.mutedFg }}>{fmtTime(entry.appliedAt)}</span>
+                  </div>
+                  <p style={{ fontSize: 11, color: E.mutedFg, marginTop: 1, lineHeight: 1.4 }}>{entry.description}</p>
+                </div>
+              </div>
+            ))}
           </div>
         ))}
       </div>
@@ -141,217 +164,186 @@ function Sidebar({ docId: activeId, documents, onSelect, onNew, onClose }) {
   );
 }
 
-// ─── Status bar ───────────────────────────────────────────────────────────────
-function StatusBar({ saveStatus, connected, wordCount }) {
-  return (
-    <footer className="h-8 border-t border-white/5 flex items-center justify-between px-6 flex-shrink-0"
-      style={{ background:"#090e1c" }}>
-      <div className="flex items-center gap-6">
-        <div className="flex items-center gap-2">
-          <div className={`w-2 h-2 rounded-full ${connected ? "bg-emerald-400 animate-pulse" : "bg-red-400"}`} />
-          <span className="text-[10px] font-bold text-white/40 uppercase tracking-widest">
-            {connected ? "System Online" : "Reconnecting"}
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="material-symbols-outlined text-white/40" style={{ fontSize:12 }}>sync</span>
-          <span className="text-[10px] font-bold text-white/40 uppercase tracking-widest">{saveStatus}</span>
-        </div>
-      </div>
-      <div className="flex items-center gap-4">
-        <span className="text-[10px] font-bold text-white/40 uppercase tracking-widest">{wordCount} words</span>
-        <span className="text-[10px] font-bold text-white/40 uppercase tracking-widest">UTF-8</span>
-      </div>
-    </footer>
-  );
-}
-
-// ─── ROOT: EditorPage ─────────────────────────────────────────────────────────
 export default function EditorPage() {
-  const { docId }   = useParams();
-  const navigate    = useNavigate();
-  const { toast }   = useToast();
-  const currentUser = useAuthStore((s) => s.user);
+  const { docId } = useParams();
+  const navigate = useNavigate();
+  const { toast } = useToast();
+  const currentUser = useAuthStore(s => s.user);
 
-  const [title,        setTitle]        = useState("Untitled Document");
-  const [saveStatus,   setSaveStatus]   = useState("All changes saved");
-  const [showHistory,  setShowHistory]  = useState(false);
-  const [sidebarOpen,  setSidebarOpen]  = useState(true);
-  const [collaborators,setCollaborators]= useState([]);
-  const [revision,     setRevision]     = useState(0);
-  const [wordCount,    setWordCount]    = useState(0);
+  const [title, setTitle] = useState("Untitled Document");
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [saveStatus, setSaveStatus] = useState("Saved");
+  const [showHistory, setShowHistory] = useState(true);
+  const [collaborators, setCollaborators] = useState([]);
+  const [wordCount, setWordCount] = useState(0);
+  const [charCount, setCharCount] = useState(0);
+  const [revision, setRevision] = useState(0);
 
   const editorCoreRef = useRef(null);
-  const saveTimer     = useRef(null);
-  const titleTimer    = useRef(null);
+  const saveTimer = useRef(null);
+  const titleTimer = useRef(null);
 
-  const { socket, connected }                        = useSocket(docId);
-  const { activeDocument, documents, updateTitle, createDoc, loadDocuments } = useDocument();
+  const { socket, connected } = useSocket(docId);
+  const { activeDocument, updateTitle, createDoc } = useDocument();
 
-  // Load documents for sidebar
-  useEffect(() => { loadDocuments(); }, []);
-
-  // Title from server
-  useEffect(() => {
-    if (activeDocument?.title) setTitle(activeDocument.title);
-  }, [activeDocument]);
+  useEffect(() => { if (activeDocument?.title) setTitle(activeDocument.title); }, [activeDocument]);
 
   useEffect(() => {
     if (!socket) return;
     const onLoad = ({ title: t }) => { if (t) setTitle(t); };
-    const onErr  = ({ message }) => toast.error(message);
-    socket.on("doc:load",  onLoad);
-    socket.on("doc:error", onErr);
+    const onErr = ({ message }) => toast.error(message);
+    socket.on("doc:load", onLoad); socket.on("doc:error", onErr);
     return () => { socket.off("doc:load", onLoad); socket.off("doc:error", onErr); };
   }, [socket, toast]);
 
   const handleContentChange = useCallback((content) => {
-    setSaveStatus("Saving…");
-    const words = (content ?? "").trim().split(/\s+/).filter(Boolean).length;
-    setWordCount(words);
+    const text = content ?? "";
+    setWordCount(text.trim().split(/\s+/).filter(Boolean).length);
+    setCharCount(text.length);
+    setSaveStatus("Saving...");
     clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => setSaveStatus("All changes saved"), 1500);
+    saveTimer.current = setTimeout(() => setSaveStatus("Saved"), 1500);
   }, []);
 
-  const handleTitleInput = useCallback((e) => {
-    const t = e.currentTarget.textContent ?? "";
-    setTitle(t);
+  const handleTitleChange = useCallback((val) => {
+    setTitle(val);
     clearTimeout(titleTimer.current);
     titleTimer.current = setTimeout(async () => {
-      if (docId && t.trim()) {
-        try { await updateTitle(docId, t.trim()); }
-        catch { toast.error("Failed to save title"); }
-      }
+      if (docId && val.trim()) { try { await updateTitle(docId, val.trim()); } catch { toast.error("Failed to save title"); } }
     }, 800);
   }, [docId, updateTitle, toast]);
 
-  const handleDocSelect = useCallback((id) => navigate(`/editor/${id}`), [navigate]);
-  const handleNewDoc    = useCallback(async () => {
+  const handleNewDoc = useCallback(async () => {
     const doc = await createDoc("Untitled Document");
     if (doc) navigate(`/editor/${doc._id ?? doc.id}`);
-    else toast.error("Failed to create document");
-  }, [createDoc, navigate, toast]);
+  }, [createDoc, navigate]);
 
-  const handleRestore = useCallback((v) => {
-    toast.success(`Restored to version from ${v.timestamp}`);
-    setShowHistory(false);
-  }, [toast]);
-
-  useEffect(() => () => {
-    clearTimeout(saveTimer.current);
-    clearTimeout(titleTimer.current);
+  const exec = useCallback((cmd, val) => {
+    document.execCommand(cmd, false, val ?? null);
+    editorCoreRef.current?.focus?.();
   }, []);
 
-  const onlineCount = collaborators.length + 1;
+  useEffect(() => () => { clearTimeout(saveTimer.current); clearTimeout(titleTimer.current); }, []);
 
   return (
-    <div className="flex h-screen overflow-hidden" style={{ background:"#090e1c", fontFamily:"Manrope,sans-serif" }}>
-      <style>{ANIM_STYLES}</style>
+    <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: E.bg, fontFamily: E.font, color: E.fg, overflow: "hidden" }}>
 
-      {/* Sidebar */}
-      {sidebarOpen && (
-        <Sidebar
-          docId={docId}
-          documents={documents}
-          onSelect={handleDocSelect}
-          onNew={handleNewDoc}
-          onClose={() => setSidebarOpen(false)}
-        />
-      )}
+      {/* NAVBAR */}
+      <header style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 14px", height: 48, background: E.sidebar, borderBottom: `1px solid ${E.border}`, flexShrink: 0, zIndex: 40 }}>
+        <div style={{ width: 28, height: 28, background: E.primary, borderRadius: 7, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, cursor: "pointer" }} onClick={() => navigate("/")}>
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={E.primFg} strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12.659 22H18a2 2 0 0 0 2-2V8l-6-6H6a2 2 0 0 0-2 2v9.34" />
+            <path d="M14 2v5a1 1 0 0 0 1 1h5m-9.622 4.622a1 1 0 0 1 3 3.003L8.36 20.637a2 2 0 0 1-.854.506l-2.867.837a.5.5 0 0 1-.62-.62l.836-2.869a2 2 0 0 1 .506-.853z" />
+          </svg>
+        </div>
 
-      {/* Main editor area */}
-      <main className="flex-grow flex flex-col overflow-hidden bg-white relative">
+        {/* Title */}
+        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+          {editingTitle ? (
+            <input value={title} onChange={e => handleTitleChange(e.target.value)}
+              onBlur={() => setEditingTitle(false)} onKeyDown={e => e.key === "Enter" && setEditingTitle(false)}
+              style={{ background: E.muted, border: `1px solid ${E.primary}`, borderRadius: 5, color: E.fg, fontSize: 13, fontWeight: 600, padding: "2px 8px", outline: "none", fontFamily: E.font, width: 200 }}
+              autoFocus />
+          ) : (
+            <span style={{ fontSize: 13, fontWeight: 600, color: E.fg, cursor: "text" }} onClick={() => setEditingTitle(true)}>{title}</span>
+          )}
+          <button onClick={() => setEditingTitle(true)}
+            style={{ background: "none", border: "none", color: E.mutedFg, cursor: "pointer", padding: 2, borderRadius: 3, display: "flex" }}
+            onMouseEnter={e => e.currentTarget.style.color = E.fg} onMouseLeave={e => e.currentTarget.style.color = E.mutedFg}>
+            <span className="material-symbols-outlined" style={{ fontSize: 14 }}>edit</span>
+          </button>
+        </div>
 
-        {/* Top navbar */}
-        <header className="h-16 flex items-center justify-between px-6 md:px-10 bg-white/80 backdrop-blur-md sticky top-0 z-50 border-b border-slate-100 flex-shrink-0">
+        <div style={{ width: 1, height: 16, background: E.border }} />
 
-          {/* Left */}
-          <div className="flex items-center gap-3 min-w-0">
-            {!sidebarOpen && (
-              <button onClick={() => setSidebarOpen(true)}
-                className="p-2 rounded-lg hover:bg-slate-100 transition-colors flex-shrink-0">
-                <span className="material-symbols-outlined text-slate-500 text-xl">menu</span>
-              </button>
-            )}
-            <button onClick={() => navigate("/")}
-              className="p-2 rounded-lg hover:bg-slate-100 transition-colors flex-shrink-0">
-              <span className="material-symbols-outlined text-slate-500 text-xl">arrow_back</span>
-            </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 1 }}>
+          {["File", "Edit", "View", "Insert", "Format", "Tools"].map(m => <MenuItem key={m} label={m} />)}
+        </div>
 
-            {/* Editable title */}
-            <h1
-              contentEditable suppressContentEditableWarning
-              onInput={handleTitleInput}
-              data-placeholder="Untitled Document"
-              className="text-xl font-black text-slate-900 tracking-tight outline-none focus:ring-0 truncate
-                empty:before:content-[attr(data-placeholder)] empty:before:text-slate-300"
-            >
-              {title}
-            </h1>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+          {/* Save status */}
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <span className="material-symbols-outlined" style={{ fontSize: 14, color: saveStatus === "Saved" ? E.primary : E.mutedFg }}>{saveStatus === "Saved" ? "cloud_done" : "sync"}</span>
+            <span style={{ fontSize: 12, color: E.mutedFg }}>{saveStatus}</span>
           </div>
 
-          {/* Center: presence avatars */}
-          <div className="flex items-center gap-3 flex-shrink-0">
-            <div className="flex -space-x-2">
-              {collaborators.slice(0, 3).map((c) => (
-                <div key={c.userId} title={c.name}
-                  className={`w-8 h-8 rounded-full border-2 border-white flex items-center justify-center text-[10px] font-black text-white ${c.color ?? "bg-cyan-500"}`}
-                  style={{ boxShadow:"0 0 0 2px #00d4ff" }}>
-                  {c.initials ?? c.name?.slice(0,2).toUpperCase()}
+          <div style={{ width: 1, height: 16, background: E.border }} />
+
+          {/* + New Document */}
+          <button onClick={handleNewDoc}
+            style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", background: "none", border: `1px solid ${E.border}`, borderRadius: 5, color: E.fg, fontSize: 12, fontWeight: 500, cursor: "pointer", fontFamily: E.font, transition: "all .15s" }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = E.primary; e.currentTarget.style.color = E.primary; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = E.border; e.currentTarget.style.color = E.fg; }}>
+            <span className="material-symbols-outlined" style={{ fontSize: 13 }}>add</span>
+            New Document
+          </button>
+
+          {/* Collaborator avatars */}
+          {collaborators.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "row-reverse" }}>
+              {collaborators.slice(0, 3).map((c, i) => (
+                <div key={c.userId ?? i} style={{ marginLeft: i > 0 ? -7 : 0, border: `2px solid ${E.sidebar}`, borderRadius: "50%" }}>
+                  <Avatar name={c.name} size={26} dot />
                 </div>
               ))}
-              {collaborators.length === 0 && (
-                <div className="w-8 h-8 rounded-full border-2 border-white bg-cyan-500 flex items-center justify-center text-[10px] font-black text-white">
-                  {currentUser?.name?.slice(0, 2).toUpperCase() ?? "ME"}
-                </div>
-              )}
-              {collaborators.length > 3 && (
-                <div className="w-8 h-8 rounded-full border-2 border-white bg-slate-200 flex items-center justify-center text-[10px] font-black text-slate-600">
-                  +{collaborators.length - 3}
-                </div>
-              )}
             </div>
+          )}
 
-            <div className="h-4 w-px bg-slate-200" />
+          {/* Share */}
+          <button style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 13px", background: E.primary, border: "none", borderRadius: 6, color: E.primFg, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: E.font }}
+            onMouseEnter={e => e.currentTarget.style.opacity = ".88"} onMouseLeave={e => e.currentTarget.style.opacity = "1"}>
+            <span className="material-symbols-outlined" style={{ fontSize: 14, fontVariationSettings: "'FILL' 1" }}>group_add</span>
+            Share
+          </button>
 
-            {/* Action buttons */}
-            <div className="flex items-center gap-1">
-              <button className="p-2 text-slate-400 hover:bg-slate-100 rounded-lg transition-colors" title="Collaborators">
-                <span className="material-symbols-outlined">group</span>
-              </button>
-              <button onClick={() => setShowHistory(true)}
-                className="p-2 text-slate-400 hover:bg-slate-100 rounded-lg transition-colors" title="Version history">
-                <span className="material-symbols-outlined">history</span>
-              </button>
-              <button className="p-2 text-[#00d4ff] hover:bg-cyan-50 rounded-lg transition-colors" title="Saved">
-                <span className="material-symbols-outlined" style={{ fontVariationSettings:"'FILL' 1" }}>cloud_done</span>
-              </button>
-            </div>
+          {/* History toggle */}
+          <button onClick={() => setShowHistory(o => !o)}
+            style={{ padding: 5, background: showHistory ? E.muted : "none", border: "none", borderRadius: 5, color: showHistory ? E.fg : E.mutedFg, cursor: "pointer", display: "flex", transition: "all .15s" }}
+            onMouseEnter={e => { if (!showHistory) { e.currentTarget.style.background = "rgba(255,255,255,.06)"; e.currentTarget.style.color = E.fg; } }}
+            onMouseLeave={e => { if (!showHistory) { e.currentTarget.style.background = "none"; e.currentTarget.style.color = E.mutedFg; } }}>
+            <span className="material-symbols-outlined" style={{ fontSize: 17 }}>history</span>
+          </button>
 
-            <button className="px-6 py-2 text-white font-bold rounded-full text-sm transition-all hover:scale-105"
-              style={{ background:"#00d4ff", boxShadow:"0 4px 20px rgba(0,212,255,0.35)", color:"#003642" }}>
-              Share
-            </button>
-          </div>
-        </header>
+          <Avatar name={currentUser?.name} size={28} dot />
+        </div>
+      </header>
 
-        {/* Formatting toolbar */}
-        <Toolbar disabled={!connected} />
+      {/* TOOLBAR */}
+      <div style={{ display: "flex", alignItems: "center", gap: 1, padding: "3px 10px", height: 38, background: E.sidebar, borderBottom: `1px solid ${E.border}`, flexShrink: 0, overflowX: "auto" }}>
+        <button style={{ display: "flex", alignItems: "center", gap: 3, padding: "2px 7px", background: E.muted, border: "none", borderRadius: 4, color: E.fg, fontSize: 12, cursor: "pointer", fontFamily: E.font, whiteSpace: "nowrap" }}>
+          Normal text <span className="material-symbols-outlined" style={{ fontSize: 12 }}>expand_more</span>
+        </button>
+        <button style={{ display: "flex", alignItems: "center", gap: 2, padding: "2px 6px", background: E.muted, border: "none", borderRadius: 4, color: E.fg, fontSize: 12, cursor: "pointer", fontFamily: E.font, minWidth: 40 }}>
+          14 <span className="material-symbols-outlined" style={{ fontSize: 12 }}>expand_more</span>
+        </button>
+        <TDiv />
+        <TBtn label="Undo" icon="undo" onClick={() => exec("undo")} />
+        <TBtn label="Redo" icon="redo" onClick={() => exec("redo")} />
+        <TDiv />
+        <TBtn label="Bold" onClick={() => exec("bold")}>          <b style={{ fontFamily: "serif" }}>B</b></TBtn>
+        <TBtn label="Italic" onClick={() => exec("italic")}>        <i style={{ fontFamily: "serif" }}>I</i></TBtn>
+        <TBtn label="Underline" onClick={() => exec("underline")}>     <u style={{ fontFamily: "serif" }}>U</u></TBtn>
+        <TBtn label="Strikethrough" onClick={() => exec("strikeThrough")}> <s style={{ fontFamily: "serif" }}>S</s></TBtn>
+        <TDiv />
+        <TBtn label="Align left" icon="format_align_left" onClick={() => exec("justifyLeft")} />
+        <TBtn label="Align center" icon="format_align_center" onClick={() => exec("justifyCenter")} />
+        <TBtn label="Align right" icon="format_align_right" onClick={() => exec("justifyRight")} />
+        <TDiv />
+        <TBtn label="Bullets" icon="format_list_bulleted" onClick={() => exec("insertUnorderedList")} />
+        <TBtn label="Numbered" icon="format_list_numbered" onClick={() => exec("insertOrderedList")} />
+        <TBtn label="Checklist" icon="checklist" onClick={() => { }} />
+        <TDiv />
+        <TBtn label="Link" icon="link" onClick={() => { const u = window.prompt("URL:"); if (u) exec("createLink", u); }} />
+        <TBtn label="Image" icon="image" onClick={() => { }} />
+        <TBtn label="Table" icon="table" onClick={() => { }} />
+        <TBtn label="Code" icon="code" onClick={() => exec("formatBlock", "pre")} />
+      </div>
 
-        {/* Editor canvas */}
-        <div className="flex-grow overflow-y-auto scrollbar-thin bg-slate-50/30 pb-40">
-          <div className="max-w-[720px] mx-auto bg-white min-h-[calc(100vh-200px)] shadow-sm ring-1 ring-black/5 p-10 md:p-20 relative my-8">
-
-            {/* Last edited strip */}
-            <div className="flex items-center gap-2 mb-8 text-[11px] font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-4">
-              <span className="material-symbols-outlined text-sm">edit_note</span>
-              {connected
-                ? `Live · rev ${revision} · ${onlineCount} user${onlineCount !== 1 ? "s" : ""} online`
-                : "Offline — changes will sync when reconnected"
-              }
-            </div>
-
-            {/* EditorCore — sole owner of useOT */}
+      {/* BODY */}
+      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+        {/* Canvas */}
+        <div style={{ flex: 1, overflowY: "auto", display: "flex", justifyContent: "center", padding: "40px 24px", background: E.bg }}>
+          <div style={{ width: "100%", maxWidth: 752, background: E.muted, borderRadius: 3, minHeight: "calc(100vh - 190px)", padding: "56px 64px" }}>
             <EditorCore
               ref={editorCoreRef}
               docId={docId}
@@ -362,52 +354,50 @@ export default function EditorPage() {
               onContentChange={handleContentChange}
               onCollaboratorsChange={setCollaborators}
               onRevisionChange={setRevision}
-              className="text-slate-800 text-[17px] leading-[1.85]"
+              className="editor-canvas-new"
             />
           </div>
         </div>
-      </main>
 
-      {/* Floating format pill */}
-      <nav className="fixed bottom-12 left-1/2 -translate-x-1/2 z-50 flex items-center px-6 py-3 gap-6 rounded-2xl border border-white/10 shadow-2xl"
-        style={{ background:"rgba(15,23,42,0.92)", backdropFilter:"blur(24px)", boxShadow:"0 20px 60px rgba(0,212,255,0.12)" }}>
-        {[
-          { icon:"format_bold",   label:"Bold",    cmd:"bold"   },
-          { icon:"format_italic", label:"Italic",  cmd:"italic" },
-        ].map(({ icon, label, cmd }) => (
-          <button key={cmd}
-            onClick={() => document.execCommand(cmd, false, null)}
-            className="text-white/70 hover:text-white hover:scale-110 transition-transform flex flex-col items-center gap-1">
-            <span className="material-symbols-outlined text-sm">{icon}</span>
-            <span className="text-[10px] font-bold">{label}</span>
-          </button>
-        ))}
-        <button className="text-cyan-400 scale-110 flex flex-col items-center gap-1"
-          onClick={() => { const url = window.prompt("Enter URL:"); if (url) document.execCommand("createLink", false, url); }}>
-          <span className="material-symbols-outlined text-sm">link</span>
-          <span className="text-[10px] font-bold">Link</span>
-        </button>
-        <button className="text-white/70 hover:text-white hover:scale-110 transition-transform flex flex-col items-center gap-1">
-          <span className="material-symbols-outlined text-sm">add_comment</span>
-          <span className="text-[10px] font-bold">Comment</span>
-        </button>
-        <div className="h-8 w-px bg-white/10 mx-2" />
-        <button className="px-5 py-2 font-black text-xs rounded-lg hover:scale-105 active:scale-95 transition-all"
-          style={{ background:"#00d4ff", color:"#003642", boxShadow:"0 4px 15px rgba(0,212,255,0.3)" }}>
-          PUBLISH
-        </button>
-      </nav>
+        {/* History panel */}
+        {showHistory && (
+          <VersionPanel
+            docId={docId}
+            collaborators={collaborators}
+            currentUser={currentUser}
+            onClose={() => setShowHistory(false)}
+          />
+        )}
+      </div>
 
-      {/* Status bar */}
-      <StatusBar saveStatus={saveStatus} connected={connected} wordCount={wordCount} />
+      {/* STATUS BAR */}
+      <footer style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 16px", height: 30, background: E.sidebar, borderTop: `1px solid ${E.border}`, flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 11, color: E.mutedFg }}>{wordCount} word{wordCount !== 1 ? "s" : ""}</span>
+          <span style={{ color: E.border }}>|</span>
+          <span style={{ fontSize: 11, color: E.mutedFg }}>{charCount} character{charCount !== 1 ? "s" : ""}</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 11, color: E.mutedFg }}>No workspace</span>
+          <span style={{ color: E.border }}>|</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <div style={{ width: 6, height: 6, borderRadius: "50%", background: connected ? E.primary : "#ef4444" }} />
+            <span style={{ fontSize: 11, color: E.mutedFg }}>{connected ? "Editing" : "Offline"}</span>
+          </div>
+        </div>
+      </footer>
 
-      {/* Version history panel */}
-      <VersionHistoryPanel
-        isOpen={showHistory}
-        onClose={() => setShowHistory(false)}
-        docId={docId}
-        onRestore={handleRestore}
-      />
+      <style>{`
+        .editor-canvas-new {
+          font-family:${E.font}; font-size:16px; line-height:1.8;
+          color:${E.fg}; min-height:60vh; outline:none;
+        }
+        .editor-canvas-new:empty::before {
+          content:"Untitled"; color:rgba(232,232,232,0.12);
+          font-size:38px; font-weight:700; pointer-events:none;
+        }
+        input::placeholder{color:${E.mutedFg};}
+      `}</style>
     </div>
   );
 }

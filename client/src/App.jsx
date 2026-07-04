@@ -11,6 +11,7 @@ import RegisterPage from "./pages/RegisterPage";
 import DocumentDashboard from "./pages/DocumentDashboard";
 import MyDocumentsPage from "./pages/MyDocumentsPage";
 import SharedWithMePage from "./pages/SharedWithMePage";
+import StarredPage from "./pages/StarredPage";
 import TrashPage from "./pages/TrashPage";
 import ArchivePage from "./pages/ArchivePage";
 import NewDocumentPage from "./pages/NewDocumentPage";
@@ -60,6 +61,9 @@ export default function App() {
           />
           <Route path="/shared"
             element={<ProtectedRoute><SharedWithMePage /></ProtectedRoute>}
+          />
+          <Route path="/starred"
+            element={<ProtectedRoute><StarredPage /></ProtectedRoute>}
           />
           <Route path="/new"
             element={<ProtectedRoute><NewDocumentPage /></ProtectedRoute>}

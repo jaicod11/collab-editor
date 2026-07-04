@@ -63,10 +63,17 @@ const ROW_ICONS = [
     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>,
 ];
 
+// ─── localStorage starred helpers ────────────────────────────────────────────
+const STARRED_KEY = "collab-starred";
+function getStarred() { try { return new Set(JSON.parse(localStorage.getItem(STARRED_KEY) ?? "[]")); } catch { return new Set(); } }
+function isStarred(id) { return getStarred().has(id); }
+function toggleStar(id) { const s = getStarred(); s.has(id) ? s.delete(id) : s.add(id); localStorage.setItem(STARRED_KEY, JSON.stringify([...s])); return s.has(id); }
+
 // ─── Three-dot context menu ───────────────────────────────────────────────────
 function ContextMenu({ doc, onClose, onOpen, onRename, onDuplicate, onArchive, onDelete }) {
     const ref = useRef(null);
     const { toast } = useToast();
+    const [starred, setStarred] = useState(() => isStarred(docPk(doc)));
 
     useEffect(() => {
         const h = (e) => { if (!ref.current?.contains(e.target)) onClose(); };
@@ -80,6 +87,13 @@ function ContextMenu({ doc, onClose, onOpen, onRename, onDuplicate, onArchive, o
         onClose();
     };
 
+    const handleStar = () => {
+        const nowStarred = toggleStar(docPk(doc));
+        setStarred(nowStarred);
+        toast.success(nowStarred ? "Added to starred" : "Removed from starred");
+        onClose();
+    };
+
     const menuItems = [
         {
             group: "actions",
@@ -88,6 +102,7 @@ function ContextMenu({ doc, onClose, onOpen, onRename, onDuplicate, onArchive, o
                 { icon: "edit", label: "Rename", action: () => { onRename(doc); onClose(); } },
                 { icon: "content_copy", label: "Duplicate", action: () => { onDuplicate(doc); onClose(); } },
                 { icon: "link", label: "Copy link", action: copyLink },
+                { icon: starred ? "star_off" : "star", label: starred ? "Remove from starred" : "Add to starred", action: handleStar, gold: !starred },
             ]
         },
         {
