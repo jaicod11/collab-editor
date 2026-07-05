@@ -1,646 +1,339 @@
 /**
- * pages/AuthPage.jsx — Upgraded Landing + Auth Page
+ * pages/AuthPage.jsx — New UI (Stitch: Collab hero + auth)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Two-part page:
+ *   1. HERO (full viewport) — floating collaborator presence cards connected
+ *      by faint dashed lines, "4 teammates online" badge, "Ready to
+ *      collaborate?" CTA that scrolls down to the auth form.
+ *   2. AUTH SECTION (below the fold) — Sign In / Register card with
+ *      Google + GitHub OAuth buttons (UI only — shows a toast explaining
+ *      OAuth isn't wired up yet), full validation, password strength meter,
+ *      terms checkbox.
  *
- * Layout:
- *  1. Fixed navbar
- *  2. Hero section — headline, subtext, two CTAs → scrolls to auth card
- *  3. Stats bar — 3 live numbers
- *  4. Features section — 6 feature cards
- *  5. How it works — 3 steps
- *  6. Auth card — Sign In / Register (no Google OAuth)
- *  7. Footer
+ * Clicking "Sign In" or "Get Started" in the navbar smooth-scrolls down
+ * to the auth card and pre-selects the matching tab.
  *
- * Design: deep dark (#080c14), teal (#00d4ff) + violet (#7c3aed) accent,
- * Syne display font, DM Sans body, animated orbs, dot grid, scroll fade-ins.
+ * Design tokens (from Stitch):
+ *   background:#141414 | foreground:#f0f0f0 | border:#2a2a2a
+ *   primary:#3dd68c | primary-fg:#0d1f14 | secondary:#1a2e20
+ *   muted:#222222 | muted-fg:#777777 | card:#1a1a1a
  */
 
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import api from "../services/api";
 import { useAuthStore } from "../store/authSlice";
+import { useToast } from "../components/UI/Toast";
 
 const isValidEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim());
 
-/* ─── Global styles injected once ─────────────────────────────────────── */
-const STYLES = `
-  @import url('https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@400;500;600&display=swap');
+const C = {
+  bg: "#141414", fg: "#f0f0f0", border: "#2a2a2a",
+  primary: "#3dd68c", primFg: "#0d1f14", sec: "#1a2e20",
+  muted: "#222222", mutedFg: "#777777", card: "#1a1a1a",
+  font: "'Geist','DM Sans',sans-serif",
+};
 
-  :root {
-    --bg:      #080c14;
-    --card:    rgba(255,255,255,.04);
-    --border:  rgba(255,255,255,.08);
-    --teal:    #00d4ff;
-    --violet:  #7c3aed;
-    --text:    #e2e8f0;
-    --muted:   rgba(255,255,255,.4);
-  }
-
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-
-  body { background: var(--bg); color: var(--text); font-family: 'DM Sans', sans-serif; }
-
-  @keyframes orb-drift {
-    0%,100% { transform: translate(0,0) scale(1);          opacity:.5; }
-    33%      { transform: translate(40px,-60px) scale(1.15); opacity:.35;}
-    66%      { transform: translate(-30px,40px) scale(.9);   opacity:.6; }
-  }
-  @keyframes fade-up {
-    from { opacity:0; transform:translateY(28px); }
-    to   { opacity:1; transform:translateY(0);    }
-  }
-  @keyframes pulse-dot {
-    0%,100% { box-shadow: 0 0 0 0 rgba(0,212,255,.6); }
-    50%     { box-shadow: 0 0 0 8px rgba(0,212,255,0); }
-  }
-  @keyframes count-up {
-    from { opacity:0; transform:scale(.8); }
-    to   { opacity:1; transform:scale(1);  }
-  }
-  @keyframes slide-tab {
-    from { opacity:0; transform:translateY(8px); }
-    to   { opacity:1; transform:translateY(0);   }
-  }
-  @keyframes spin { to { transform:rotate(360deg); } }
-  @keyframes shimmer-line {
-    0%   { background-position:-200% 0; }
-    100% { background-position:200% 0;  }
-  }
-
-  .orb { position:absolute; border-radius:50%; filter:blur(110px); animation:orb-drift ease-in-out infinite; }
-  .dot-grid { background-image:radial-gradient(rgba(255,255,255,.05) 1px,transparent 1px); background-size:28px 28px; }
-  .glass { background:var(--card); backdrop-filter:blur(24px); border:1px solid var(--border); }
-  .fade-in { animation:fade-up .7s ease both; }
-  .gradient-text {
-    background:linear-gradient(135deg,var(--teal),#a78bfa,var(--teal));
-    background-size:200%;
-    -webkit-background-clip:text; -webkit-text-fill-color:transparent;
-    animation:shimmer-line 4s linear infinite;
-  }
-  .feature-card:hover {
-    border-color:rgba(0,212,255,.25)!important;
-    transform:translateY(-4px);
-    box-shadow:0 20px 50px rgba(0,212,255,.08);
-  }
-  .feature-card { transition:all .3s ease; }
-  .step-line::before {
-    content:''; position:absolute; top:24px; left:calc(50% + 28px);
-    width:calc(100% - 56px); height:1px;
-    background:linear-gradient(to right,rgba(0,212,255,.3),transparent);
-  }
-  .btn-primary {
-    background:linear-gradient(135deg,var(--teal),var(--violet));
-    color:#fff; font-weight:700; border:none; cursor:pointer;
-    transition:transform .2s,box-shadow .2s;
-  }
-  .btn-primary:hover { transform:scale(1.03); box-shadow:0 8px 30px rgba(0,212,255,.35); }
-  .btn-primary:active { transform:scale(.97); }
-  .btn-primary:disabled { opacity:.6; cursor:not-allowed; transform:none; }
-  .btn-outline {
-    background:transparent; border:1px solid var(--border);
-    color:var(--text); cursor:pointer; font-weight:600;
-    transition:border-color .2s,background .2s;
-  }
-  .btn-outline:hover { border-color:rgba(0,212,255,.4); background:rgba(0,212,255,.05); }
-  .input-field {
-    width:100%; background:rgba(255,255,255,.04);
-    border:none; border-bottom:2px solid rgba(255,255,255,.1);
-    color:var(--text); outline:none; font-family:'DM Sans',sans-serif;
-    transition:border-color .2s;
-  }
-  .input-field:focus { border-color:var(--teal); }
-  .input-field::placeholder { color:rgba(255,255,255,.25); }
-  .tab-active { color:#fff; position:relative; }
-  .tab-active::after {
-    content:''; position:absolute; bottom:-4px; left:0; width:100%; height:2px;
-    background:var(--teal); box-shadow:0 0 10px var(--teal);
-  }
-  .tab-inactive { color:var(--muted); cursor:pointer; }
-  .tab-inactive:hover { color:rgba(255,255,255,.7); }
-  .scroll-section { opacity:0; transform:translateY(30px); transition:opacity .7s ease, transform .7s ease; }
-  .scroll-section.visible { opacity:1; transform:translateY(0); }
-  ::-webkit-scrollbar { width:4px; } ::-webkit-scrollbar-thumb { background:rgba(255,255,255,.1); border-radius:4px; }
-  ::selection { background:rgba(0,212,255,.25); }
+const ANIM = `
+  @keyframes float-slow { 0%,100%{transform:translateY(0);} 50%{transform:translateY(-14px);} }
+  @keyframes ping-dot   { 0%{box-shadow:0 0 0 0 rgba(61,214,140,.55);} 100%{box-shadow:0 0 0 10px rgba(61,214,140,0);} }
+  @keyframes dash-draw  { from{stroke-dashoffset:400;} to{stroke-dashoffset:0;} }
+  @keyframes fade-in    { from{opacity:0;transform:translateY(12px);} to{opacity:1;transform:translateY(0);} }
+  .float-card{animation:float-slow 6s ease-in-out infinite;}
+  .ping-dot{animation:ping-dot 2s infinite;}
+  .fade-in{animation:fade-in .6s ease both;}
+  .connector{stroke-dasharray:6 6;animation:dash-draw 3s linear infinite;}
+  .grid-bg{background-image:radial-gradient(rgba(61,214,140,.06) 1px,transparent 1px);background-size:26px 26px;}
 `;
 
-/* ─── FEATURES data ────────────────────────────────────────────────────── */
-const FEATURES = [
-  { icon: "bolt", title: "Sub-50ms Sync", desc: "Operational Transformation engine resolves every conflict in under 50 milliseconds — edits appear instantly across all connected clients." },
-  { icon: "group", title: "Live Cursors", desc: "See every collaborator's cursor and selection in real time. Colour-coded presence avatars show exactly who is editing what." },
-  { icon: "history", title: "Version History", desc: "Full operation log with point-in-time restore. Replay any snapshot and bring a document back to exactly how it was." },
-  { icon: "lock", title: "JWT Auth", desc: "Secure token-based authentication with bcrypt password hashing. Sessions stored in Redis with automatic expiry." },
-  { icon: "hub", title: "Redis Pub/Sub", desc: "Multi-node horizontal scaling via Redis pub/sub. Add more server instances behind Nginx — zero downtime, zero data loss." },
-  { icon: "description", title: "Smart Documents", desc: "Auto-save, archive, search by content, collaborator management, and status tracking — everything a modern document needs." },
+const PRESENCE_CARDS = [
+  { id: "mia", name: "Mia Tanaka", location: "Coffee shop, Tokyo", status: "Working on", doc: "Brand Guidelines v2", tag: "Design", tagColor: "#a78bfa", top: "8%", left: "6%", delay: "0s" },
+  { id: "ravi", name: "Ravi Patel", location: "Home, Mumbai", status: "Reviewing", doc: "Engineering Sprint #22", tag: "Engineering", tagColor: "#60a5fa", top: "4%", left: "38%", delay: "-1.5s" },
+  { id: "amara", name: "Amara Osei", location: "Office, Accra", status: "Writing", doc: "User Research Synthesis", tag: "Research", tagColor: "#f59e0b", top: "5%", right: "4%", delay: "-3s" },
+  { id: "marcus", name: "Marcus Webb", location: "Cafe, Berlin", status: "Editing", doc: "Investor Deck — Series B", tag: "Finance", tagColor: "#3dd68c", top: "48%", left: "24%", delay: "-2s" },
 ];
 
-/* ─── HOW IT WORKS ─────────────────────────────────────────────────────── */
-const STEPS = [
-  { n: "01", title: "Create a document", desc: "Hit the + button. Your document is live in under a second and ready to share." },
-  { n: "02", title: "Share the link", desc: "Copy the editor URL and send it. Anyone with the link and an account can join instantly." },
-  { n: "03", title: "Edit together", desc: "Type simultaneously. OT handles every conflict — no overwrites, no lost work, ever." },
-];
-
-/* ─── STATS ─────────────────────────────────────────────────────────────── */
-const STATS = [
-  { value: "< 50ms", label: "Edit latency" },
-  { value: "∞", label: "Concurrent editors" },
-  { value: "100%", label: "Conflict-free merges" },
-];
-
-/* ─── Scroll observer hook ──────────────────────────────────────────────── */
-function useScrollReveal() {
-  useEffect(() => {
-    const els = document.querySelectorAll(".scroll-section");
-    const io = new IntersectionObserver(
-      (entries) => entries.forEach((e) => { if (e.isIntersecting) e.target.classList.add("visible"); }),
-      { threshold: 0.12 }
-    );
-    els.forEach((el) => io.observe(el));
-    return () => io.disconnect();
-  }, []);
-}
-
-/* ─── Field ─────────────────────────────────────────────────────────────── */
-function Field({ label, type = "text", placeholder, value, onChange, error, icon, right }) {
+function PresenceCard({ card }) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
-        <label style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--muted)" }}>{label}</label>
-        {right}
+    <div className="float-card fade-in" style={{
+      position: "absolute", top: card.top, left: card.left, right: card.right, width: 240,
+      background: "rgba(26,26,26,.85)", backdropFilter: "blur(12px)", border: `1px solid ${C.border}`,
+      borderRadius: 14, padding: 16, animationDelay: card.delay, boxShadow: "0 20px 50px rgba(0,0,0,.4)", zIndex: 2,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+        <div style={{ position: "relative" }}>
+          <div style={{ width: 34, height: 34, borderRadius: "50%", background: `linear-gradient(135deg,${card.tagColor},${C.primary})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, color: "#0d1f14" }}>
+            {card.name.split(" ").map(n => n[0]).join("")}
+          </div>
+          <div className="ping-dot" style={{ position: "absolute", bottom: -1, right: -1, width: 9, height: 9, borderRadius: "50%", background: C.primary, border: `2px solid ${C.card}` }} />
+        </div>
+        <div>
+          <p style={{ fontSize: 13, fontWeight: 600, color: C.fg, lineHeight: 1.3 }}>{card.name}</p>
+          <p style={{ fontSize: 11, color: C.mutedFg, display: "flex", alignItems: "center", gap: 4 }}>
+            <span style={{ width: 5, height: 5, borderRadius: "50%", background: C.primary, display: "inline-block" }} />
+            {card.location}
+          </p>
+        </div>
       </div>
-      <div style={{ position: "relative" }}>
-        {icon && (
-          <span className="material-symbols-outlined" style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: "rgba(255,255,255,.3)", fontSize: 18 }}>
-            {icon}
-          </span>
-        )}
-        <input
-          type={type} value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={placeholder}
-          className="input-field"
-          style={{ padding: icon ? "12px 12px 12px 40px" : "12px 12px", fontSize: 14, borderRadius: 0 }}
-        />
+      <div style={{ background: C.muted, borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>
+        <p style={{ fontSize: 10, color: C.mutedFg, marginBottom: 2 }}>{card.status}</p>
+        <p style={{ fontSize: 12, fontWeight: 600, color: C.fg }}>{card.doc}</p>
       </div>
-      {error && <p style={{ color: "#f87171", fontSize: 11, fontWeight: 600 }}>{error}</p>}
+      <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+        <span style={{ width: 6, height: 6, borderRadius: "50%", background: card.tagColor, display: "inline-block" }} />
+        <span style={{ fontSize: 11, color: C.mutedFg }}>{card.tag}</span>
+      </div>
     </div>
   );
 }
 
-/* ─── Spinner ───────────────────────────────────────────────────────────── */
-function Spinner() {
+function Field({ label, type = "text", placeholder, value, onChange, error, icon, right, trailing }) {
   return (
-    <svg style={{ animation: "spin .8s linear infinite", width: 16, height: 16 }} viewBox="0 0 24 24" fill="none">
-      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" style={{ opacity: .25 }} />
-      <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" style={{ opacity: .75 }} />
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+        <label style={{ fontSize: 13, color: C.mutedFg }}>{label}</label>
+        {right}
+      </div>
+      <div style={{ position: "relative" }}>
+        {icon && <span className="material-symbols-outlined" style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 17, color: C.mutedFg }}>{icon}</span>}
+        <input type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
+          style={{ width: "100%", background: C.muted, border: `1px solid ${error ? "#ef4444" : C.border}`, borderRadius: 8, padding: `10px 14px 10px ${icon ? 40 : 14}px`, color: C.fg, fontSize: 14, outline: "none", fontFamily: C.font, transition: "border-color .15s" }}
+          onFocus={(e) => { if (!error) e.target.style.borderColor = C.primary; }}
+          onBlur={(e) => { if (!error) e.target.style.borderColor = C.border; }} />
+        {trailing}
+      </div>
+      {error && <p style={{ color: "#ef4444", fontSize: 11, marginTop: 4 }}>{error}</p>}
+    </div>
+  );
+}
+
+function OAuthButton({ icon, label, onClick }) {
+  const [hov, setHov] = useState(false);
+  return (
+    <button onClick={onClick} onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}
+      style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "11px", background: hov ? "#242424" : C.muted, border: `1px solid ${C.border}`, borderRadius: 8, color: C.fg, fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: C.font, transition: "background .15s" }}>
+      {icon} {label}
+    </button>
+  );
+}
+
+function PasswordStrength({ password }) {
+  const score = [password.length >= 8, /[A-Z]/.test(password), /[0-9]/.test(password), /[^A-Za-z0-9]/.test(password)].filter(Boolean).length;
+  const colors = ["#ef4444", "#f59e0b", "#3dd68c", "#3dd68c"];
+  return (
+    <div style={{ display: "flex", gap: 4, marginTop: 8 }}>
+      {Array.from({ length: 4 }).map((_, i) => (
+        <div key={i} style={{ flex: 1, height: 3, borderRadius: 2, background: i < score ? colors[score - 1] : C.border, transition: "background .2s" }} />
+      ))}
+    </div>
+  );
+}
+
+function SignInForm({ onOAuth }) {
+  const [email, setEmail] = useState(""); const [password, setPassword] = useState("");
+  const [showPw, setShowPw] = useState(false); const [errors, setErrors] = useState({});
+  const [loading, setLoading] = useState(false); const [serverErr, setServerErr] = useState("");
+  const login = useAuthStore(s => s.login); const navigate = useNavigate();
+  const from = useLocation().state?.from ?? "/";
+
+  const submit = async (e) => {
+    e.preventDefault(); setServerErr("");
+    const v = {};
+    if (!isValidEmail(email)) v.email = "Enter a valid email address.";
+    if (!password) v.password = "Password is required.";
+    setErrors(v); if (Object.keys(v).length) return;
+    setLoading(true);
+    try { const { data } = await api.post("/auth/login", { email, password }); login(data); navigate(from, { replace: true }); }
+    catch (err) { setServerErr(err?.response?.data?.message ?? "Invalid credentials."); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <form onSubmit={submit} noValidate>
+      {serverErr && <div style={{ background: "rgba(239,68,68,.1)", border: "1px solid rgba(239,68,68,.25)", borderRadius: 8, padding: "10px 14px", color: "#f87171", fontSize: 13, marginBottom: 16 }}>{serverErr}</div>}
+      <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
+        <OAuthButton icon={<GoogleIcon />} label="Google" onClick={() => onOAuth("Google")} />
+        <OAuthButton icon={<GitHubIcon />} label="GitHub" onClick={() => onOAuth("GitHub")} />
+      </div>
+      <div style={{ position: "relative", textAlign: "center", marginBottom: 20 }}>
+        <div style={{ position: "absolute", top: "50%", left: 0, right: 0, height: 1, background: C.border }} />
+        <span style={{ position: "relative", background: C.card, padding: "0 12px", fontSize: 12, color: C.mutedFg }}>or continue with email</span>
+      </div>
+      <Field label="Email address" type="email" placeholder="you@company.com" icon="mail" value={email} onChange={setEmail} error={errors.email} />
+      <Field label="Password" type={showPw ? "text" : "password"} placeholder="Enter your password" icon="lock" value={password} onChange={setPassword} error={errors.password}
+        right={<a href="#" style={{ color: C.primary, fontSize: 12, textDecoration: "none" }}>Forgot password?</a>}
+        trailing={<button type="button" onClick={() => setShowPw(s => !s)} style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: C.mutedFg, display: "flex" }}><span className="material-symbols-outlined" style={{ fontSize: 17 }}>{showPw ? "visibility_off" : "visibility"}</span></button>}
+      />
+      <button type="submit" disabled={loading} style={{ width: "100%", padding: "13px", background: C.primary, color: C.primFg, border: "none", borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: C.font, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, opacity: loading ? .7 : 1, transition: "opacity .15s", marginTop: 6 }}>
+        {loading ? "Signing in…" : "Sign In"}
+      </button>
+    </form>
+  );
+}
+
+function RegisterForm({ onOAuth }) {
+  const [name, setName] = useState(""); const [email, setEmail] = useState(""); const [password, setPassword] = useState("");
+  const [showPw, setShowPw] = useState(false); const [agreed, setAgreed] = useState(false);
+  const [errors, setErrors] = useState({}); const [loading, setLoading] = useState(false); const [serverErr, setServerErr] = useState("");
+  const login = useAuthStore(s => s.login); const navigate = useNavigate();
+  const from = useLocation().state?.from ?? "/";
+
+  const submit = async (e) => {
+    e.preventDefault(); setServerErr("");
+    const v = {};
+    if (!name.trim()) v.name = "Enter your full name.";
+    if (!isValidEmail(email)) v.email = "Enter a valid work email.";
+    if (password.length < 8) v.password = "Minimum 8 characters.";
+    if (!agreed) v.agreed = "You must agree to continue.";
+    setErrors(v); if (Object.keys(v).length) return;
+    setLoading(true);
+    try { const { data } = await api.post("/auth/register", { name, email, password }); login(data); navigate(from, { replace: true }); }
+    catch (err) { setServerErr(err?.response?.data?.message ?? "Registration failed."); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <form onSubmit={submit} noValidate>
+      {serverErr && <div style={{ background: "rgba(239,68,68,.1)", border: "1px solid rgba(239,68,68,.25)", borderRadius: 8, padding: "10px 14px", color: "#f87171", fontSize: 13, marginBottom: 16 }}>{serverErr}</div>}
+      <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
+        <OAuthButton icon={<GoogleIcon />} label="Google" onClick={() => onOAuth("Google")} />
+        <OAuthButton icon={<GitHubIcon />} label="GitHub" onClick={() => onOAuth("GitHub")} />
+      </div>
+      <div style={{ position: "relative", textAlign: "center", marginBottom: 20 }}>
+        <div style={{ position: "absolute", top: "50%", left: 0, right: 0, height: 1, background: C.border }} />
+        <span style={{ position: "relative", background: C.card, padding: "0 12px", fontSize: 12, color: C.mutedFg }}>or continue with email</span>
+      </div>
+      <Field label="Full name" placeholder="Alex Morgan" icon="person" value={name} onChange={setName} error={errors.name} />
+      <Field label="Work email" type="email" placeholder="you@company.com" icon="mail" value={email} onChange={setEmail} error={errors.email} />
+      <div>
+        <Field label="Password" type={showPw ? "text" : "password"} placeholder="Min. 8 characters" icon="lock" value={password} onChange={setPassword} error={errors.password}
+          trailing={<button type="button" onClick={() => setShowPw(s => !s)} style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: C.mutedFg, display: "flex" }}><span className="material-symbols-outlined" style={{ fontSize: 17 }}>{showPw ? "visibility_off" : "visibility"}</span></button>}
+        />
+        <PasswordStrength password={password} />
+      </div>
+      <label style={{ display: "flex", alignItems: "flex-start", gap: 8, marginTop: 16, marginBottom: 8, cursor: "pointer" }}>
+        <input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} style={{ marginTop: 2, accentColor: C.primary, cursor: "pointer" }} />
+        <span style={{ fontSize: 12, color: C.mutedFg, lineHeight: 1.5 }}>
+          I agree to the <a href="#" style={{ color: C.primary, textDecoration: "none" }}>Terms of Service</a> and{" "}
+          <a href="#" style={{ color: C.primary, textDecoration: "none" }}>Privacy Policy</a>
+        </span>
+      </label>
+      {errors.agreed && <p style={{ color: "#ef4444", fontSize: 11, marginBottom: 12 }}>{errors.agreed}</p>}
+      <button type="submit" disabled={loading} style={{ width: "100%", padding: "13px", background: C.primary, color: C.primFg, border: "none", borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: C.font, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, opacity: loading ? .7 : 1, transition: "opacity .15s", marginTop: 8 }}>
+        {loading ? "Creating account…" : <>Create free account <span className="material-symbols-outlined" style={{ fontSize: 16 }}>arrow_forward</span></>}
+      </button>
+    </form>
+  );
+}
+
+function GoogleIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24">
+      <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4" />
+      <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853" />
+      <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05" />
+      <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335" />
+    </svg>
+  );
+}
+function GitHubIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="#f0f0f0">
+      <path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.57.1.78-.25.78-.55 0-.27-.01-1.16-.02-2.11-3.2.7-3.87-1.36-3.87-1.36-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.7.08-.7 1.17.08 1.78 1.2 1.78 1.2 1.03 1.77 2.71 1.26 3.37.96.1-.75.4-1.26.73-1.55-2.55-.29-5.23-1.28-5.23-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11.1 11.1 0 0 1 5.79 0c2.2-1.49 3.17-1.18 3.17-1.18.64 1.59.24 2.76.12 3.05.74.81 1.18 1.83 1.18 3.09 0 4.41-2.69 5.39-5.25 5.67.42.36.78 1.08.78 2.17 0 1.57-.01 2.83-.01 3.22 0 .31.2.66.79.55A10.98 10.98 0 0 0 23.5 12c0-6.35-5.15-11.5-11.5-11.5z" />
     </svg>
   );
 }
 
-/* ─── Login Form ────────────────────────────────────────────────────────── */
-function LoginForm({ onSwitch }) {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [errors, setErrors] = useState({});
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState("");
-  const login = useAuthStore((s) => s.login);
-  const navigate = useNavigate();
-  const from = useLocation().state?.from ?? "/";
-
-  const submit = async (e) => {
-    e.preventDefault(); setErr("");
-    const v = {};
-    if (!isValidEmail(email)) v.email = "Enter a valid email.";
-    if (!password) v.password = "Password is required.";
-    setErrors(v);
-    if (Object.keys(v).length) return;
-    setLoading(true);
-    try {
-      const { data } = await api.post("/auth/login", { email, password });
-      login(data); navigate(from, { replace: true });
-    } catch (ex) { setErr(ex?.response?.data?.message ?? "Invalid credentials."); }
-    finally { setLoading(false); }
-  };
-
-  return (
-    <form onSubmit={submit} noValidate style={{ display: "flex", flexDirection: "column", gap: 20, animation: "slide-tab .25s ease both" }}>
-      {err && (
-        <div style={{ background: "rgba(248,113,113,.1)", border: "1px solid rgba(248,113,113,.25)", borderRadius: 10, padding: "12px 16px", color: "#f87171", fontSize: 13 }}>
-          {err}
-        </div>
-      )}
-      <Field label="Email Address" type="email" placeholder="name@company.com" icon="mail"
-        value={email} onChange={setEmail} error={errors.email} />
-      <Field label="Password" type="password" placeholder="••••••••" icon="lock"
-        value={password} onChange={setPassword} error={errors.password}
-        right={<a href="#" style={{ color: "var(--teal)", fontSize: 12, fontWeight: 600, textDecoration: "none" }}>Forgot password?</a>}
-      />
-      <button type="submit" className="btn-primary" disabled={loading}
-        style={{ padding: "14px", borderRadius: 12, fontSize: 13, letterSpacing: "0.08em", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-        {loading ? <><Spinner /> Signing in…</> : "CONTINUE"}
-      </button>
-      <p style={{ textAlign: "center", fontSize: 14, color: "var(--muted)" }}>
-        Don't have an account?{" "}
-        <button type="button" onClick={onSwitch}
-          style={{ background: "none", border: "none", color: "var(--teal)", fontWeight: 700, cursor: "pointer", fontSize: 14 }}>
-          Register
-        </button>
-      </p>
-    </form>
-  );
-}
-
-/* ─── Register Form ─────────────────────────────────────────────────────── */
-function RegisterForm({ onSwitch }) {
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [confirm, setConfirm] = useState("");
-  const [errors, setErrors] = useState({});
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState("");
-  const login = useAuthStore((s) => s.login);
-  const navigate = useNavigate();
-  const from = useLocation().state?.from ?? "/";
-
-  const submit = async (e) => {
-    e.preventDefault(); setErr("");
-    const v = {};
-    if (!name.trim()) v.name = "Enter your full name.";
-    if (!isValidEmail(email)) v.email = "Enter a valid email.";
-    if (password.length < 8) v.password = "Minimum 8 characters.";
-    if (confirm !== password) v.confirm = "Passwords do not match.";
-    setErrors(v);
-    if (Object.keys(v).length) return;
-    setLoading(true);
-    try {
-      const { data } = await api.post("/auth/register", { name, email, password });
-      login(data); navigate(from, { replace: true });
-    } catch (ex) { setErr(ex?.response?.data?.message ?? "Registration failed."); }
-    finally { setLoading(false); }
-  };
-
-  return (
-    <form onSubmit={submit} noValidate style={{ display: "flex", flexDirection: "column", gap: 16, animation: "slide-tab .25s ease both" }}>
-      {err && (
-        <div style={{ background: "rgba(248,113,113,.1)", border: "1px solid rgba(248,113,113,.25)", borderRadius: 10, padding: "12px 16px", color: "#f87171", fontSize: 13 }}>
-          {err}
-        </div>
-      )}
-      <Field label="Full Name" placeholder="John Doe" icon="person"
-        value={name} onChange={setName} error={errors.name} />
-      <Field label="Email Address" type="email" placeholder="name@company.com" icon="mail"
-        value={email} onChange={setEmail} error={errors.email} />
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <label style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--muted)" }}>Password</label>
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••"
-            className="input-field" style={{ padding: "12px", fontSize: 14 }} />
-          {errors.password && <p style={{ color: "#f87171", fontSize: 11 }}>{errors.password}</p>}
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <label style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--muted)" }}>Confirm</label>
-          <input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder="••••••••"
-            className="input-field" style={{ padding: "12px", fontSize: 14 }} />
-          {errors.confirm && <p style={{ color: "#f87171", fontSize: 11 }}>{errors.confirm}</p>}
-        </div>
-      </div>
-      <button type="submit" className="btn-primary" disabled={loading}
-        style={{ padding: "14px", borderRadius: 12, fontSize: 13, letterSpacing: "0.08em", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 4 }}>
-        {loading ? <><Spinner /> Creating account…</> : "CREATE ACCOUNT"}
-      </button>
-      <p style={{ textAlign: "center", fontSize: 11, color: "rgba(255,255,255,.25)", textTransform: "uppercase", letterSpacing: "0.06em", lineHeight: 1.6 }}>
-        By registering, you agree to our Terms and data policies.
-      </p>
-      <p style={{ textAlign: "center", fontSize: 14, color: "var(--muted)" }}>
-        Already have an account?{" "}
-        <button type="button" onClick={onSwitch}
-          style={{ background: "none", border: "none", color: "var(--teal)", fontWeight: 700, cursor: "pointer", fontSize: 14 }}>
-          Sign In
-        </button>
-      </p>
-    </form>
-  );
-}
-
-/* ─── ROOT ──────────────────────────────────────────────────────────────── */
 export default function AuthPage() {
-  const [view, setView] = useState("login");
+  const [view, setView] = useState("register");
   const authRef = useRef(null);
-  useScrollReveal();
+  const { toast } = useToast();
 
-  const scrollToAuth = () => authRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  const scrollToAuth = (targetView) => {
+    setView(targetView);
+    authRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const handleOAuth = useCallback((provider) => {
+    toast.info(`${provider} sign-in isn't configured yet — use email instead.`);
+  }, [toast]);
 
   return (
-    <div style={{ minHeight: "100vh", background: "var(--bg)", fontFamily: "'DM Sans',sans-serif", overflowX: "hidden" }}>
-      <style>{STYLES}</style>
+    <div style={{ background: C.bg, color: C.fg, fontFamily: C.font, minHeight: "100vh" }}>
+      <style>{ANIM}</style>
 
-      {/* ── Background orbs (fixed) ──────────────────────────────────────── */}
-      <div style={{ position: "fixed", inset: 0, pointerEvents: "none", zIndex: 0, overflow: "hidden" }}>
-        <div className="orb" style={{ width: 700, height: 700, top: "-20%", left: "-15%", background: "#0ea5e9", opacity: .25, animationDuration: "22s" }} />
-        <div className="orb" style={{ width: 600, height: 600, bottom: "-15%", right: "-10%", background: "#7c3aed", opacity: .25, animationDuration: "28s", animationDelay: "-8s" }} />
-        <div className="orb" style={{ width: 400, height: 400, top: "40%", left: "45%", background: "#06b6d4", opacity: .15, animationDuration: "18s", animationDelay: "-4s" }} />
-        <div className="dot-grid" style={{ position: "absolute", inset: 0, opacity: .4 }} />
-      </div>
+      {/* HERO */}
+      <section style={{ position: "relative", minHeight: "100vh", overflow: "hidden", display: "flex", flexDirection: "column" }}>
+        <div className="grid-bg" style={{ position: "absolute", inset: 0, opacity: .5 }} />
+        <div style={{ position: "absolute", inset: 0, background: "radial-gradient(circle at 50% 30%, rgba(61,214,140,.06), transparent 60%)" }} />
 
-      {/* ── Navbar ───────────────────────────────────────────────────────── */}
-      <nav style={{
-        position: "fixed", top: 0, width: "100%", zIndex: 100,
-        display: "flex", alignItems: "center", justifyContent: "space-between",
-        padding: "0 48px", height: 68,
-        background: "rgba(8,12,20,.85)", backdropFilter: "blur(20px)",
-        borderBottom: "1px solid rgba(255,255,255,.06)",
-      }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{
-            width: 34, height: 34, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center",
-            background: "linear-gradient(135deg,#00d4ff,#7c3aed)", boxShadow: "0 0 20px rgba(0,212,255,.4)",
-          }}>
-            <span className="material-symbols-outlined" style={{ color: "#fff", fontSize: 20, fontVariationSettings: "'FILL' 1" }}>description</span>
-          </div>
-          <span style={{
-            fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 20, letterSpacing: "-.02em",
-            background: "linear-gradient(to right,#00d4ff,#a78bfa)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent"
-          }}>
-            CollabDocs
-          </span>
-        </div>
+        <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", zIndex: 1 }} preserveAspectRatio="none">
+          <line className="connector" x1="18%" y1="18%" x2="45%" y2="42%" stroke={C.border} strokeWidth="1" />
+          <line className="connector" x1="45%" y1="42%" x2="72%" y2="16%" stroke={C.border} strokeWidth="1" />
+          <line className="connector" x1="45%" y1="42%" x2="34%" y2="65%" stroke={C.border} strokeWidth="1" />
+          <line className="connector" x1="72%" y1="16%" x2="88%" y2="55%" stroke={C.border} strokeWidth="1" />
+        </svg>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <button onClick={() => { setView("login"); scrollToAuth(); }} className="btn-outline"
-            style={{ padding: "8px 20px", borderRadius: 8, fontSize: 13, fontFamily: "'DM Sans',sans-serif" }}>
-            Sign In
-          </button>
-          <button onClick={() => { setView("register"); scrollToAuth(); }} className="btn-primary"
-            style={{ padding: "8px 20px", borderRadius: 8, fontSize: 13, fontFamily: "'DM Sans',sans-serif" }}>
-            Get Started
-          </button>
-        </div>
-      </nav>
-
-      {/* ── Hero ─────────────────────────────────────────────────────────── */}
-      <section style={{ position: "relative", zIndex: 1, minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "120px 24px 80px", textAlign: "center" }}>
-
-        {/* Live badge */}
-        <div style={{ display: "inline-flex", alignItems: "center", gap: 8, background: "rgba(0,212,255,.08)", border: "1px solid rgba(0,212,255,.2)", borderRadius: 40, padding: "6px 16px", marginBottom: 32 }}>
-          <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#00d4ff", animation: "pulse-dot 1.8s infinite" }} />
-          <span style={{ fontSize: 12, fontWeight: 700, color: "var(--teal)", letterSpacing: "0.08em", textTransform: "uppercase" }}>
-            Real-time Collaboration — Live Now
-          </span>
-        </div>
-
-        {/* Headline */}
-        <h1 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: "clamp(32px,4vw,58px)", lineHeight: 1.15, letterSpacing: "-.01em", maxWidth: 820, marginBottom: 24 }}>
-          Write Together,{" "}
-          <span className="gradient-text">Think Together</span>
-          {" "}— In Real Time.
-        </h1>
-
-        <p style={{ fontSize: "clamp(15px,1.5vw,20px)", color: "var(--muted)", maxWidth: 580, lineHeight: 1.75, marginBottom: 48 }}>
-          CollabDocs is a Google Docs-style collaborative editor powered by
-          Operational Transformation — resolving every concurrent edit conflict
-          in under 50 milliseconds, across as many users as you need.
-        </p>
-
-        {/* CTAs */}
-        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", justifyContent: "center", marginBottom: 80 }}>
-          <button onClick={() => { setView("register"); scrollToAuth(); }} className="btn-primary"
-            style={{ padding: "16px 36px", borderRadius: 12, fontSize: 15, fontFamily: "'DM Sans',sans-serif", display: "flex", alignItems: "center", gap: 8 }}>
-            Start Writing Free
-            <span className="material-symbols-outlined" style={{ fontSize: 18 }}>arrow_forward</span>
-          </button>
-          <button onClick={() => { setView("login"); scrollToAuth(); }} className="btn-outline"
-            style={{ padding: "16px 36px", borderRadius: 12, fontSize: 15, fontFamily: "'DM Sans',sans-serif" }}>
-            Sign In
-          </button>
-        </div>
-
-        {/* Hero visual — mini editor mock */}
-        <div className="glass fade-in" style={{
-          maxWidth: 780, width: "100%", borderRadius: 20, overflow: "hidden",
-          boxShadow: "0 40px 100px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.06)",
-          animationDelay: ".4s",
-        }}>
-          {/* Fake browser chrome */}
-          <div style={{ padding: "12px 20px", background: "rgba(255,255,255,.03)", borderBottom: "1px solid rgba(255,255,255,.07)", display: "flex", alignItems: "center", gap: 8 }}>
-            {["#f87171", "#fb923c", "#4ade80"].map((c, i) => (
-              <div key={i} style={{ width: 11, height: 11, borderRadius: "50%", background: c, opacity: .7 }} />
-            ))}
-            <div style={{ flex: 1, height: 24, background: "rgba(255,255,255,.04)", borderRadius: 6, marginLeft: 12, maxWidth: 300 }} />
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              {["JA", "SR", "MK"].map((init, i) => (
-                <div key={i} style={{
-                  width: 24, height: 24, borderRadius: "50%", border: "2px solid var(--bg)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 800, color: "#fff",
-                  background: ["#00d4ff", "#7c3aed", "#f59e0b"][i], boxShadow: `0 0 0 2px ${["#00d4ff", "#7c3aed", "#f59e0b"][i]}50`
-                }}>
-                  {init}
-                </div>
-              ))}
-              <span style={{ fontSize: 11, color: "var(--muted)", marginLeft: 4 }}>3 online</span>
-            </div>
-          </div>
-          {/* Fake editor content */}
-          <div style={{ padding: "36px 48px", minHeight: 200, textAlign: "left" }}>
-            <div style={{ fontFamily: "'Syne',sans-serif", fontSize: 22, fontWeight: 700, color: "var(--text)", marginBottom: 20 }}>
-              Q4 Product Strategy 2024
-            </div>
-
-            {/* Line 1 — full */}
-            <div style={{ height: 10, background: "rgba(255,255,255,.07)", borderRadius: 4, width: "100%", marginBottom: 10 }} />
-
-            {/* Line 2 — SR cursor sits here */}
-            <div style={{ position: "relative", marginBottom: 10 }}>
-              <div style={{ height: 10, background: "rgba(255,255,255,.07)", borderRadius: 4, width: "85%" }} />
-              <div style={{ position: "absolute", top: -18, left: "40%", display: "inline-flex", flexDirection: "column", alignItems: "flex-start" }}>
-                <div style={{ background: "#7c3aed", color: "#fff", fontSize: 9, fontWeight: 800, padding: "2px 8px", borderRadius: 4, marginBottom: 2, whiteSpace: "nowrap" }}>Sarah</div>
-                <div style={{ width: 2, height: 18, background: "#7c3aed", boxShadow: "0 0 6px #7c3aed", animation: "pulse-dot 1.5s infinite" }} />
-              </div>
-            </div>
-
-            {/* Lines 3-5 */}
-            {[92, 70, 100].map((w, i) => (
-              <div key={i} style={{ height: 10, background: "rgba(255,255,255,.07)", borderRadius: 4, width: `${w}%`, marginBottom: 10 }} />
-            ))}
-
-            {/* Line 6 — Jaideep cursor */}
-            <div style={{ height: 10, background: "rgba(255,255,255,.07)", borderRadius: 4, width: "45%", marginBottom: 10 }} />
-
-            {/* Jaideep cursor at end of last line */}
-            <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-start", marginTop: 4 }}>
-              <div style={{ background: "#00d4ff", color: "#003642", fontSize: 9, fontWeight: 800, padding: "2px 8px", borderRadius: 4, marginBottom: 2 }}>Jaideep</div>
-              <div style={{ width: 2, height: 18, background: "#00d4ff", boxShadow: "0 0 6px #00d4ff", animation: "pulse-dot 1.2s infinite" }} />
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* ── Stats bar ────────────────────────────────────────────────────── */}
-      <section className="scroll-section" style={{ position: "relative", zIndex: 1, padding: "0 24px 100px" }}>
-        <div style={{ maxWidth: 800, margin: "0 auto", display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 1, borderRadius: 20, overflow: "hidden", border: "1px solid var(--border)" }}>
-          {STATS.map((s, i) => (
-            <div key={i} className="glass" style={{ padding: "40px 24px", textAlign: "center", borderRadius: 0 }}>
-              <div style={{
-                fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 42, lineHeight: 1, marginBottom: 12,
-                background: "linear-gradient(135deg,var(--teal),#a78bfa)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent"
-              }}>
-                {s.value}
-              </div>
-              <div style={{ fontSize: 13, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.08em" }}>{s.label}</div>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* ── Features ─────────────────────────────────────────────────────── */}
-      <section className="scroll-section" style={{ position: "relative", zIndex: 1, padding: "0 24px 120px" }}>
-        <div style={{ maxWidth: 1100, margin: "0 auto" }}>
-          <div style={{ textAlign: "center", marginBottom: 64 }}>
-            <p style={{ fontSize: 12, fontWeight: 700, color: "var(--teal)", textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 16 }}>
-              Why CollabDocs
-            </p>
-            <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: "clamp(24px,2.8vw,40px)", letterSpacing: "-.01em" }}>
-              Built for speed. Designed for teams.
-            </h2>
-          </div>
-
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(300px,1fr))", gap: 20 }}>
-            {FEATURES.map((f, i) => (
-              <div key={i} className="glass feature-card" style={{ padding: "32px", borderRadius: 20, cursor: "default" }}>
-                <div style={{
-                  width: 44, height: 44, borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 20,
-                  background: "linear-gradient(135deg,rgba(0,212,255,.15),rgba(124,58,237,.15))",
-                  border: "1px solid rgba(0,212,255,.2)"
-                }}>
-                  <span className="material-symbols-outlined" style={{ color: "var(--teal)", fontSize: 22 }}>{f.icon}</span>
-                </div>
-                <h3 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 18, marginBottom: 10, letterSpacing: "-.01em" }}>{f.title}</h3>
-                <p style={{ fontSize: 14, color: "var(--muted)", lineHeight: 1.75 }}>{f.desc}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* ── How it works ─────────────────────────────────────────────────── */}
-      <section className="scroll-section" style={{ position: "relative", zIndex: 1, padding: "0 24px 120px" }}>
-        <div style={{ maxWidth: 900, margin: "0 auto" }}>
-          <div style={{ textAlign: "center", marginBottom: 64 }}>
-            <p style={{ fontSize: 12, fontWeight: 700, color: "var(--teal)", textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 16 }}>Simple by Design</p>
-            <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: "clamp(24px,2.8vw,40px)", letterSpacing: "-.01em" }}>
-              Up and running in 30 seconds
-            </h2>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 48, position: "relative" }}>
-            {STEPS.map((s, i) => (
-              <div key={i} style={{ textAlign: "center", position: "relative" }}>
-                {i < STEPS.length - 1 && (
-                  <div style={{
-                    position: "absolute", top: 24, left: "calc(50% + 28px)", width: "calc(100% - 56px)", height: 1,
-                    background: "linear-gradient(to right,rgba(0,212,255,.3),transparent)"
-                  }} />
-                )}
-                <div style={{
-                  width: 52, height: 52, borderRadius: "50%", margin: "0 auto 24px",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  background: "linear-gradient(135deg,rgba(0,212,255,.2),rgba(124,58,237,.2))",
-                  border: "1px solid rgba(0,212,255,.3)",
-                  fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 16, color: "var(--teal)"
-                }}>
-                  {s.n}
-                </div>
-                <h3 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 700, fontSize: 17, marginBottom: 12 }}>{s.title}</h3>
-                <p style={{ fontSize: 14, color: "var(--muted)", lineHeight: 1.7 }}>{s.desc}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* ── Auth card ────────────────────────────────────────────────────── */}
-      <section ref={authRef} className="scroll-section" style={{ position: "relative", zIndex: 1, padding: "0 24px 120px", display: "flex", flexDirection: "column", alignItems: "center" }}>
-        <div style={{ textAlign: "center", marginBottom: 40 }}>
-          <h2 style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: "clamp(22px,2.5vw,36px)", letterSpacing: "-.01em", marginBottom: 12 }}>
-            Ready to collaborate?
-          </h2>
-          <p style={{ fontSize: 15, color: "var(--muted)" }}>Create your free account — no credit card required.</p>
-        </div>
-
-        <div className="glass" style={{ width: "100%", maxWidth: 440, borderRadius: 24, padding: "40px", boxShadow: "0 40px 100px rgba(0,0,0,.4)" }}>
-          {/* Logo */}
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginBottom: 32, gap: 12 }}>
-            <div style={{
-              width: 48, height: 48, borderRadius: 14, display: "flex", alignItems: "center", justifyContent: "center",
-              background: "linear-gradient(135deg,rgba(0,212,255,.2),rgba(124,58,237,.2))",
-              border: "1px solid rgba(0,212,255,.3)", boxShadow: "0 0 20px rgba(0,212,255,.2)"
-            }}>
-              <span className="material-symbols-outlined" style={{ color: "var(--teal)", fontSize: 26, fontVariationSettings: "'FILL' 1" }}>description</span>
-            </div>
-            <span style={{
-              fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 24, letterSpacing: "-.02em",
-              background: "linear-gradient(to right,#00d4ff,#a78bfa)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent"
-            }}>
-              CollabDocs
-            </span>
-          </div>
-
-          {/* Tab switcher */}
-          <div style={{ display: "flex", borderBottom: "1px solid rgba(255,255,255,.08)", marginBottom: 28, gap: 24 }}>
-            {[{ key: "login", label: "Sign In" }, { key: "register", label: "Register" }].map(({ key, label }) => (
-              <button key={key} type="button"
-                onClick={() => setView(key)}
-                className={view === key ? "tab-active" : "tab-inactive"}
-                style={{
-                  background: "none", border: "none", fontFamily: "'DM Sans',sans-serif", fontWeight: 700, fontSize: 15,
-                  paddingBottom: 12, cursor: "pointer", transition: "color .2s"
-                }}>
-                {label}
-              </button>
-            ))}
-          </div>
-
-          {view === "login"
-            ? <LoginForm onSwitch={() => setView("register")} />
-            : <RegisterForm onSwitch={() => setView("login")} />
-          }
-        </div>
-      </section>
-
-      {/* ── Footer ───────────────────────────────────────────────────────── */}
-      <footer style={{
-        position: "relative", zIndex: 1,
-        borderTop: "1px solid var(--border)",
-        padding: "40px 48px",
-        display: "flex", flexDirection: "column", gap: 20,
-      }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 16 }}>
+        <nav style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "24px 40px", position: "relative", zIndex: 10 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ width: 28, height: 28, borderRadius: 8, background: "linear-gradient(135deg,#00d4ff,#7c3aed)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <span className="material-symbols-outlined" style={{ color: "#fff", fontSize: 16, fontVariationSettings: "'FILL' 1" }}>description</span>
+            <div style={{ width: 32, height: 32, background: C.primary, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={C.primFg} strokeWidth="2.4"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg>
             </div>
-            <span style={{
-              fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 16,
-              background: "linear-gradient(to right,#00d4ff,#a78bfa)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent"
-            }}>
-              CollabDocs
-            </span>
+            <span style={{ fontSize: 18, fontWeight: 600, color: C.fg }}>Collab</span>
           </div>
-          <div style={{ display: "flex", gap: 32 }}>
-            {["Privacy Policy", "Terms of Service", "Security"].map((l) => (
-              <a key={l} href="#" style={{
-                fontSize: 12, fontWeight: 600, color: "var(--muted)", textDecoration: "none", letterSpacing: "0.06em", textTransform: "uppercase",
-                transition: "color .2s"
-              }}
-                onMouseEnter={(e) => e.target.style.color = "var(--teal)"}
-                onMouseLeave={(e) => e.target.style.color = "var(--muted)"}>
-                {l}
-              </a>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <button onClick={() => scrollToAuth("login")} style={{ padding: "9px 18px", background: C.muted, border: `1px solid ${C.border}`, borderRadius: 8, color: C.fg, fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: C.font }}>Sign In</button>
+            <button onClick={() => scrollToAuth("register")} style={{ padding: "9px 18px", background: C.primary, border: "none", borderRadius: 8, color: C.primFg, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: C.font }}>Get Started</button>
+          </div>
+        </nav>
+
+        <div style={{ position: "relative", flex: 1 }}>
+          {PRESENCE_CARDS.map(card => <PresenceCard key={card.id} card={card} />)}
+        </div>
+
+        <div style={{ position: "relative", zIndex: 5, textAlign: "center", paddingBottom: 60 }}>
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 8, background: "rgba(26,26,26,.9)", border: `1px solid ${C.border}`, borderRadius: 30, padding: "8px 18px", marginBottom: 28 }}>
+            <div className="ping-dot" style={{ width: 7, height: 7, borderRadius: "50%", background: C.primary }} />
+            <span style={{ fontSize: 13, color: C.mutedFg }}>4 teammates online across 4 cities</span>
+          </div>
+          <h1 style={{ fontSize: "clamp(28px,4vw,44px)", fontWeight: 700, marginBottom: 24, letterSpacing: "-0.02em" }}>Ready to collaborate?</h1>
+          <button onClick={() => scrollToAuth("register")} style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "14px 32px", background: C.primary, color: C.primFg, border: "none", borderRadius: 10, fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: C.font }}>
+            join for free
+            <span className="material-symbols-outlined" style={{ fontSize: 18 }}>arrow_downward</span>
+          </button>
+        </div>
+      </section>
+
+      {/* AUTH FORM */}
+      <section ref={authRef} style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "60px 24px" }}>
+        <div style={{ width: "100%", maxWidth: 440 }}>
+          <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 16, padding: 32, boxShadow: "0 30px 80px rgba(0,0,0,.4)" }}>
+            <div style={{ display: "flex", borderBottom: `1px solid ${C.border}`, marginBottom: 24 }}>
+              {[{ key: "login", label: "Sign In" }, { key: "register", label: "Register" }].map(({ key, label }) => (
+                <button key={key} onClick={() => setView(key)}
+                  style={{ flex: 1, padding: "12px 0", background: "none", border: "none", borderBottom: view === key ? `2px solid ${C.primary}` : "2px solid transparent", color: view === key ? C.fg : C.mutedFg, fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: C.font, marginBottom: -1, transition: "color .15s" }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            {view === "login" ? <SignInForm onOAuth={handleOAuth} /> : <RegisterForm onOAuth={handleOAuth} />}
+            <p style={{ textAlign: "center", fontSize: 13, color: C.mutedFg, marginTop: 20 }}>
+              {view === "login" ? "Don't have an account? " : "Already have an account? "}
+              <button onClick={() => setView(view === "login" ? "register" : "login")} style={{ background: "none", border: "none", color: C.primary, fontWeight: 600, cursor: "pointer", fontFamily: C.font, fontSize: 13 }}>
+                {view === "login" ? "Sign up" : "Sign in"}
+              </button>
+            </p>
+          </div>
+          <div style={{ display: "flex", justifyContent: "center", gap: 20, marginTop: 24, flexWrap: "wrap" }}>
+            {[{ icon: "verified_user", label: "SOC 2" }, { icon: "lock", label: "E2E encrypted" }, { icon: "groups", label: "50k+ teams" }].map(({ icon, label }) => (
+              <div key={label} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: C.mutedFg }}>
+                <span className="material-symbols-outlined" style={{ fontSize: 15 }}>{icon}</span>
+                {label}
+              </div>
             ))}
           </div>
         </div>
-        <p style={{ fontSize: 12, color: "rgba(255,255,255,.2)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-          © 2024 CollabDocs. All rights reserved.
-        </p>
-      </footer>
+      </section>
     </div>
   );
 }
