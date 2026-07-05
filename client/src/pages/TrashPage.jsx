@@ -1,25 +1,3 @@
-/**
- * pages/TrashPage.jsx
- * ─────────────────────────────────────────────────────────────────────────────
- * Trash / Deleted Documents page converted from Stitch HTML.
- *
- * Columns: TITLE | TAG | DELETED BY | DELETED AT | (restore) | (×)
- *
- * Features:
- *  - Loads archived/deleted documents from API
- *  - Per-category colored tags + "General" gray tag
- *  - Restore icon → restores doc back to Active, removes from list
- *  - × icon → permanently deletes with confirm modal
- *  - "Empty Trash" button → confirm modal → bulk permanent delete
- *  - Info bar: "Restoring a document will move it back to My Documents."
- *  - Empty state with trash icon
- *
- * Backend note:
- *  Trash uses status:"Archived" as a proxy until a "Deleted" status is added.
- *  Restore → PATCH /api/documents/:id { status:"Active" }
- *  Delete  → DELETE /api/documents/:id
- */
-
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "../components/UI/Toast";
@@ -261,12 +239,8 @@ export default function TrashPage() {
     // Load archived/deleted docs
     useEffect(() => {
         setLoading(true);
-        // Uses Archived status as proxy for trash; swap for status:"Deleted" once backend supports it
-        api.get("/documents", { params: { filter: "all" } })
-            .then(({ data }) => {
-                const trashed = (data?.documents ?? []).filter((d) => d.status === "Archived");
-                setDocuments(trashed);
-            })
+        api.get("/documents", { params: { filter: "trash" } })
+            .then(({ data }) => setDocuments(data?.documents ?? []))
             .catch(() => { })
             .finally(() => setLoading(false));
     }, []);

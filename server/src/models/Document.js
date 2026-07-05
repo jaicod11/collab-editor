@@ -10,7 +10,7 @@ const documentSchema = new mongoose.Schema(
     revision: { type: Number, default: 0 },
     owner: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     collaborators: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
-    status: { type: String, enum: ["Active", "Archived"], default: "Active" },
+    status: { type: String, enum: ["Active", "Archived", "Deleted"], default: "Active" },
     snapshot: {
       content: String,
       revision: Number,

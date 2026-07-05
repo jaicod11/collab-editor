@@ -1,22 +1,3 @@
-/**
- * pages/ArchivePage.jsx
- * ─────────────────────────────────────────────────────────────────────────────
- * Archived Documents page converted from Stitch HTML output.
- *
- * Key differences from TrashPage:
- *  - Info banner at the TOP (not bottom)
- *  - "Archived On" date shows "Archived Mar 15" format
- *  - AUTHOR column (not "Deleted by")
- *  - Three-dot context menu per row (Open, Restore, Delete)
- *  - Bottom center: "Restore all" (green outlined) + "Delete all permanently"
- *  - No individual restore/delete icon buttons on rows
- *
- * API:
- *  GET  /api/documents?filter=archived  → loads archived docs
- *  PATCH /api/documents/:id { status:"Active" }  → restore
- *  DELETE /api/documents/:id  → permanent delete
- */
-
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "../components/UI/Toast";
@@ -258,11 +239,8 @@ export default function ArchivePage() {
     // Load archived docs
     useEffect(() => {
         setLoading(true);
-        api.get("/documents", { params: { filter: "all" } })
-            .then(({ data }) => {
-                const archived = (data?.documents ?? []).filter((d) => d.status === "Archived");
-                setDocuments(archived);
-            })
+        api.get("/documents", { params: { filter: "archived" } })
+            .then(({ data }) => setDocuments(data?.documents ?? []))
             .catch(() => { })
             .finally(() => setLoading(false));
     }, []);

@@ -1,18 +1,3 @@
-/**
- * pages/MyDocumentsPage.jsx
- * ─────────────────────────────────────────────────────────────────────────────
- * "My Documents" list/table view converted from Stitch output.
- *
- * Features:
- *   - Category filter pills (All, Product, Design, Engineering, Research, Finance, Marketing)
- *   - Sort by: Last edited, Created, Title, Author
- *   - List view (table rows) with icon, title, tag, author, date, three-dot menu
- *   - Three-dot context menu: Open, Rename, Duplicate, Copy Link, Archive, Delete
- *   - Search filtering
- *   - Profile dropdown (shared)
- *   - Real API wired via useDocument()
- */
-
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useDocument } from "../hooks/useDocument";
@@ -70,7 +55,7 @@ function isStarred(id) { return getStarred().has(id); }
 function toggleStar(id) { const s = getStarred(); s.has(id) ? s.delete(id) : s.add(id); localStorage.setItem(STARRED_KEY, JSON.stringify([...s])); return s.has(id); }
 
 // ─── Three-dot context menu ───────────────────────────────────────────────────
-function ContextMenu({ doc, onClose, onOpen, onRename, onDuplicate, onArchive, onDelete }) {
+function ContextMenu({ doc, onClose, onOpen, onRename, onDuplicate, onArchive, onMoveToTrash }) {
     const ref = useRef(null);
     const { toast } = useToast();
     const [starred, setStarred] = useState(() => isStarred(docPk(doc)));
@@ -109,7 +94,7 @@ function ContextMenu({ doc, onClose, onOpen, onRename, onDuplicate, onArchive, o
             group: "danger",
             items: [
                 { icon: "archive", label: "Move to Archive", action: () => { onArchive(doc); onClose(); }, muted: true },
-                { icon: "delete", label: "Delete", action: () => { onDelete(doc); onClose(); }, danger: true },
+                { icon: "delete", label: "Move to Trash", action: () => { onMoveToTrash(doc); onClose(); }, danger: true },
             ]
         }
     ];
@@ -188,16 +173,19 @@ function RenameModal({ doc, onSave, onClose }) {
     );
 }
 
-// ─── Delete confirm modal ─────────────────────────────────────────────────────
-function DeleteModal({ doc, onConfirm, onClose }) {
+// ─── Move-to-Trash confirm modal ──────────────────────────────────────────────
+// Renamed from "DeleteModal" — this is a reversible soft-delete, not a
+// permanent deletion. Permanent deletion only happens on the Trash page.
+function MoveToTrashModal({ doc, onConfirm, onClose }) {
     return (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center" }}
             onClick={onClose}>
             <div onClick={(e) => e.stopPropagation()}
                 style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: 24, width: 400, boxShadow: "0 20px 60px rgba(0,0,0,.6)" }}>
-                <h3 style={{ fontSize: 16, fontWeight: 600, color: T.fg, marginBottom: 8, fontFamily: T.font }}>Delete document</h3>
+                <h3 style={{ fontSize: 16, fontWeight: 600, color: T.fg, marginBottom: 8, fontFamily: T.font }}>Move to Trash</h3>
                 <p style={{ fontSize: 13, color: T.mutedFg, marginBottom: 24, lineHeight: 1.6 }}>
-                    Are you sure you want to delete "<strong style={{ color: T.fg }}>{doc.title ?? "Untitled"}</strong>"? This cannot be undone.
+                    Move "<strong style={{ color: T.fg }}>{doc.title ?? "Untitled"}</strong>" to Trash? You can restore it
+                    later, or it will be permanently deleted after 30 days.
                 </p>
                 <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
                     <button onClick={onClose}
@@ -206,7 +194,7 @@ function DeleteModal({ doc, onConfirm, onClose }) {
                     </button>
                     <button onClick={() => { onConfirm(doc); onClose(); }}
                         style={{ padding: "8px 16px", background: "#ef4444", border: "none", color: "#fff", borderRadius: 6, fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: T.font }}>
-                        Delete
+                        Move to Trash
                     </button>
                 </div>
             </div>
@@ -215,7 +203,7 @@ function DeleteModal({ doc, onConfirm, onClose }) {
 }
 
 // ─── Document table row ───────────────────────────────────────────────────────
-function DocRow({ doc, index, onOpen, onRename, onDuplicate, onArchive, onDelete }) {
+function DocRow({ doc, index, onOpen, onRename, onDuplicate, onArchive, onMoveToTrash }) {
     const [hov, setHov] = useState(false);
     const [menuOpen, setMenuOpen] = useState(false);
     const cat = inferCategory(doc.title ?? "");
@@ -291,7 +279,7 @@ function DocRow({ doc, index, onOpen, onRename, onDuplicate, onArchive, onDelete
                         onRename={onRename}
                         onDuplicate={onDuplicate}
                         onArchive={onArchive}
-                        onDelete={onDelete}
+                        onMoveToTrash={onMoveToTrash}
                     />
                 )}
             </div>
@@ -349,7 +337,7 @@ export default function MyDocumentsPage() {
     const { toast } = useToast();
     const user = useAuthStore((s) => s.user);
     const logout = useAuthStore((s) => s.logout);
-    const { loading, loadDocuments, createDoc, updateTitle, deleteDoc } = useDocument();
+    const { loading, loadDocuments, createDoc, updateTitle } = useDocument();
 
     const [documents, setDocuments] = useState([]);
     const [search, setSearch] = useState("");
@@ -357,7 +345,7 @@ export default function MyDocumentsPage() {
     const [sortBy, setSortBy] = useState("Last edited");
     const [profileOpen, setProfileOpen] = useState(false);
     const [renameDoc, setRenameDoc] = useState(null);
-    const [deleteDocObj, setDeleteDocObj] = useState(null);
+    const [trashTarget, setTrashTarget] = useState(null); // doc pending "Move to Trash" confirm
 
     useEffect(() => {
         loadDocuments()
@@ -406,17 +394,19 @@ export default function MyDocumentsPage() {
         try {
             await api.patch(`/documents/${docPk(doc)}`, { status: "Archived" });
             setDocuments((prev) => prev.filter((d) => docPk(d) !== docPk(doc)));
-            toast.success("Document archived");
+            toast.success(`"${doc.title ?? "Document"}" moved to Archive`);
         } catch { toast.error("Failed to archive"); }
     }, [toast]);
 
-    const handleDelete = useCallback(async (doc) => {
+    // "Move to Trash" — SOFT delete. Sets status:"Deleted" instead of
+    // permanently destroying the document. Reversible from the Trash page.
+    const handleMoveToTrash = useCallback(async (doc) => {
         try {
-            await deleteDoc(docPk(doc));
+            await api.patch(`/documents/${docPk(doc)}`, { status: "Deleted" });
             setDocuments((prev) => prev.filter((d) => docPk(d) !== docPk(doc)));
-            toast.success("Document deleted");
-        } catch { toast.error("Failed to delete"); }
-    }, [deleteDoc, toast]);
+            toast.success(`"${doc.title ?? "Document"}" moved to Trash`);
+        } catch { toast.error("Failed to move document to Trash"); }
+    }, [toast]);
 
     return (
         <div style={{ display: "flex", minHeight: "100vh", background: T.bg, fontFamily: T.font, color: T.fg }}>
@@ -528,7 +518,7 @@ export default function MyDocumentsPage() {
                                 onRename={(d) => setRenameDoc(d)}
                                 onDuplicate={handleDuplicate}
                                 onArchive={handleArchive}
-                                onDelete={(d) => setDeleteDocObj(d)}
+                                onMoveToTrash={(d) => setTrashTarget(d)}
                             />
                         ))
                     )}
@@ -545,7 +535,7 @@ export default function MyDocumentsPage() {
 
             {/* Modals */}
             {renameDoc && <RenameModal doc={renameDoc} onSave={handleRename} onClose={() => setRenameDoc(null)} />}
-            {deleteDocObj && <DeleteModal doc={deleteDocObj} onConfirm={handleDelete} onClose={() => setDeleteDocObj(null)} />}
+            {trashTarget && <MoveToTrashModal doc={trashTarget} onConfirm={handleMoveToTrash} onClose={() => setTrashTarget(null)} />}
 
             <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }

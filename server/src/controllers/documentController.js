@@ -1,15 +1,5 @@
-/**
- * controllers/documentController.js
- * ─────────────────────────────────────────────────────────────────────────────
- * GET    /api/documents          → list documents for current user
- * POST   /api/documents          → create new document
- * GET    /api/documents/:id      → get single document
- * PATCH  /api/documents/:id      → update title / status
- * DELETE /api/documents/:id      → delete document
- */
-
-const Document        = require("../models/Document");
-const redisService    = require("../services/redisService");
+const Document = require("../models/Document");
+const redisService = require("../services/redisService");
 
 // ── GET /api/documents ────────────────────────────────────────────────────────
 exports.list = async (req, res, next) => {
@@ -21,8 +11,15 @@ exports.list = async (req, res, next) => {
       $or: [{ owner: userId }, { collaborators: userId }],
     };
 
-    if (filter === "owned")  query = { owner: userId };
-    if (filter === "shared") query = { collaborators: userId };
+    if (filter === "owned") query = { owner: userId };
+    if (filter === "shared") query = { collaborators: userId, owner: { $ne: userId } };
+    if (filter === "archived") {
+      query.status = "Archived";
+    } else if (filter === "trash") {
+      query.status = "Deleted";
+    } else {
+      query.status = "Active";
+    }
 
     if (search.trim()) {
       query.$text = { $search: search.trim() };
@@ -35,7 +32,6 @@ exports.list = async (req, res, next) => {
       .limit(100)
       .lean();
 
-    // Recent = last 10 edited by this user
     const recent = documents.slice(0, 10);
 
     res.json({ documents, recent });
@@ -51,9 +47,9 @@ exports.create = async (req, res, next) => {
 
     const doc = await Document.create({
       title,
-      content:  "",
+      content: "",
       revision: 0,
-      owner:    req.user.id,
+      owner: req.user.id,
     });
 
     res.status(201).json(doc);
@@ -65,7 +61,7 @@ exports.create = async (req, res, next) => {
 // ── GET /api/documents/:id ────────────────────────────────────────────────────
 exports.getOne = async (req, res, next) => {
   try {
-    const docId  = req.params.id;
+    const docId = req.params.id;
     const userId = req.user.id;
 
     // Check Redis cache first
@@ -99,7 +95,7 @@ exports.update = async (req, res, next) => {
   try {
     const { title, status } = req.body;
     const updates = {};
-    if (title  !== undefined) updates.title  = title;
+    if (title !== undefined) updates.title = title;
     if (status !== undefined) updates.status = status;
 
     const doc = await Document.findOneAndUpdate(
@@ -123,7 +119,7 @@ exports.update = async (req, res, next) => {
 exports.remove = async (req, res, next) => {
   try {
     const doc = await Document.findOneAndDelete({
-      _id:   req.params.id,
+      _id: req.params.id,
       owner: req.user.id,
     });
 
