@@ -1,13 +1,6 @@
-/**
- * App.jsx — final wired version
- * All routes, guards, and ToastProvider.
- */
-
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { ToastProvider } from "./components/UI/Toast";
 import AuthPage from "./pages/AuthPage";
-import LoginPage from "./pages/LoginPage";
-import RegisterPage from "./pages/RegisterPage";
 import DocumentDashboard from "./pages/DocumentDashboard";
 import MyDocumentsPage from "./pages/MyDocumentsPage";
 import SharedWithMePage from "./pages/SharedWithMePage";
@@ -49,9 +42,6 @@ export default function App() {
         <Routes>
           {/* ── Public ──────────────────────────────────────────────────── */}
           <Route path="/auth" element={<PublicRoute><AuthPage /></PublicRoute>} />
-          <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
-          <Route path="/register" element={<PublicRoute><RegisterPage /></PublicRoute>} />
-
           {/* ── Protected ───────────────────────────────────────────────── */}
           <Route path="/"
             element={<ProtectedRoute><DocumentDashboard /></ProtectedRoute>}
