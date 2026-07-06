@@ -69,6 +69,16 @@ const RestoreIcon = ({ size = 14, color = "currentColor" }) => (
 function RowMenu({ doc, onClose, onOpen, onRestore, onDelete }) {
     const ref = useRef(null);
     const { toast } = useToast();
+    const [openUpward, setOpenUpward] = useState(false);
+
+    // Flip the menu upward if there isn't enough room below the trigger.
+    useEffect(() => {
+        if (!ref.current) return;
+        const rect = ref.current.getBoundingClientRect();
+        const spaceBelow = window.innerHeight - rect.top;
+        const estimatedMenuHeight = 200; // 3 items + divider + 1 danger item
+        setOpenUpward(spaceBelow < estimatedMenuHeight);
+    }, []);
 
     useEffect(() => {
         const h = (e) => { if (!ref.current?.contains(e.target)) onClose(); };
@@ -92,9 +102,13 @@ function RowMenu({ doc, onClose, onOpen, onRestore, onDelete }) {
 
     return (
         <div ref={ref} style={{
-            position: "absolute", right: 0, top: 28, width: 195, zIndex: 100,
+            position: "absolute", right: 0,
+            ...(openUpward ? { bottom: 28 } : { top: 28 }),
+            width: 195, zIndex: 100,
+            maxHeight: "min(260px, calc(100vh - 32px))",
+            overflowY: "auto",
             background: T.surface, border: `1px solid ${T.border}`,
-            borderRadius: 8, overflow: "hidden",
+            borderRadius: 8, overflowX: "hidden",
             boxShadow: "0 8px 24px rgba(0,0,0,.6)",
         }}>
             {items.map((item, i) =>

@@ -1,17 +1,3 @@
-/**
- * pages/SharedWithMePage.jsx
- * ─────────────────────────────────────────────────────────────────────────────
- * "Shared with Me" page converted from Stitch HTML output.
- *
- * Key differences from MyDocumentsPage:
- *  - Columns: TITLE | TAG | SHARED BY | SHARED AT | ACCESS | ⋯
- *  - Per-category tag colors (not just green/gray — each category has own hue)
- *  - ACCESS badge: "Can edit" (green) | "Can view" (ghost)
- *  - Documents are those where current user is a collaborator, not owner
- *  - No create/rename/duplicate/delete actions (read access by default)
- *    Three-dot menu only has: Open, Copy link, Remove me
- */
-
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "../components/UI/Toast";
@@ -80,6 +66,16 @@ const ROW_ICONS = [
 function SharedContextMenu({ doc, onClose, onOpen, onRemove }) {
     const ref = useRef(null);
     const { toast } = useToast();
+    const [openUpward, setOpenUpward] = useState(false);
+
+    // Flip the menu upward if there isn't enough room below the trigger.
+    useEffect(() => {
+        if (!ref.current) return;
+        const rect = ref.current.getBoundingClientRect();
+        const spaceBelow = window.innerHeight - rect.top;
+        const estimatedMenuHeight = 160; // 3 items + divider + 1 danger item
+        setOpenUpward(spaceBelow < estimatedMenuHeight);
+    }, []);
 
     useEffect(() => {
         const h = (e) => { if (!ref.current?.contains(e.target)) onClose(); };
@@ -102,9 +98,13 @@ function SharedContextMenu({ doc, onClose, onOpen, onRemove }) {
 
     return (
         <div ref={ref} style={{
-            position: "absolute", right: 0, top: 28, width: 180, zIndex: 100,
+            position: "absolute", right: 0,
+            ...(openUpward ? { bottom: 28 } : { top: 28 }),
+            width: 180, zIndex: 100,
+            maxHeight: "min(240px, calc(100vh - 32px))",
+            overflowY: "auto",
             background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8,
-            overflow: "hidden", boxShadow: "0 8px 24px rgba(0,0,0,.6)",
+            overflowX: "hidden", boxShadow: "0 8px 24px rgba(0,0,0,.6)",
         }}>
             {items.map((item, i) =>
                 item.divider

@@ -59,6 +59,17 @@ function ContextMenu({ doc, onClose, onOpen, onRename, onDuplicate, onArchive, o
     const ref = useRef(null);
     const { toast } = useToast();
     const [starred, setStarred] = useState(() => isStarred(docPk(doc)));
+    const [openUpward, setOpenUpward] = useState(false);
+
+    // Measure available space below the trigger button.
+    // If there isn't enough room for the full menu, flip it to open upward.
+    useEffect(() => {
+        if (!ref.current) return;
+        const rect = ref.current.getBoundingClientRect();
+        const spaceBelow = window.innerHeight - rect.top;
+        const estimatedMenuHeight = 260; // 5 action items + divider + 2 danger items
+        setOpenUpward(spaceBelow < estimatedMenuHeight);
+    }, []);
 
     useEffect(() => {
         const h = (e) => { if (!ref.current?.contains(e.target)) onClose(); };
@@ -101,9 +112,14 @@ function ContextMenu({ doc, onClose, onOpen, onRename, onDuplicate, onArchive, o
 
     return (
         <div ref={ref} style={{
-            position: "absolute", right: 0, top: 28, width: 200, zIndex: 100,
+            position: "absolute", right: 0,
+            // Flip direction based on available viewport space
+            ...(openUpward ? { bottom: 28 } : { top: 28 }),
+            width: 200, zIndex: 100,
+            maxHeight: "min(320px, calc(100vh - 32px))", // never taller than the viewport
+            overflowY: "auto",
             background: T.surface, border: `1px solid ${T.border}`,
-            borderRadius: 8, overflow: "hidden",
+            borderRadius: 8, overflowX: "hidden",
             boxShadow: "0 8px 24px rgba(0,0,0,.6)",
         }}>
             {menuItems.map((group, gi) => (
