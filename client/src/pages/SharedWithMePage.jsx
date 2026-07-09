@@ -1,8 +1,26 @@
+/**
+ * pages/SharedWithMePage.jsx
+ * ─────────────────────────────────────────────────────────────────────────────
+ * "Shared with Me" page converted from Stitch HTML output.
+ *
+ * Columns: TITLE | TAG | SHARED BY | SHARED AT | ACCESS | ⋯
+ *
+ * ── Dropdown menu fix ────────────────────────────────────────────────────────
+ * The table wrapper below uses `overflow: hidden` (for its rounded corners).
+ * A normal absolutely-positioned dropdown INSIDE that wrapper gets clipped by
+ * it regardless of viewport space — flipping the menu up/down doesn't help
+ * because the clip boundary is the table box itself, not the screen edge.
+ * Fix: the three-dot menu is rendered via <PortalMenu> straight into
+ * document.body with `position: fixed`, calculated from the button's real
+ * on-screen coordinates — so it's never inside any overflow:hidden ancestor.
+ */
+
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "../components/UI/Toast";
 import { useAuthStore } from "../store/authSlice";
 import Sidebar, { T, Icons } from "../components/Layout/Sidebar";
+import PortalMenu from "../components/UI/PortalMenu";
 import api from "../services/api";
 
 // ─── Category tag color palette (from Stitch) ─────────────────────────────────
@@ -62,26 +80,31 @@ const ROW_ICONS = [
     (color) => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>,
 ];
 
-// ─── Three-dot context menu (limited actions for shared docs) ─────────────────
-function SharedContextMenu({ doc, onClose, onOpen, onRemove }) {
-    const ref = useRef(null);
+// ─── Menu item row (shared visual style) ──────────────────────────────────────
+function MenuItemRow({ icon, label, onClick, danger }) {
+    return (
+        <button onClick={onClick}
+            style={{
+                width: "100%", display: "flex", alignItems: "center", gap: 10,
+                padding: "9px 14px", background: T.surface, border: "none",
+                color: danger ? "#ef4444" : T.fg,
+                fontSize: 13, cursor: "pointer", textAlign: "left", fontFamily: T.font,
+                transition: "background .12s",
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.background = danger ? "rgba(239,68,68,.08)" : T.muted}
+            onMouseLeave={(e) => e.currentTarget.style.background = T.surface}
+        >
+            <span className="material-symbols-outlined" style={{ fontSize: 15, color: danger ? "#ef4444" : T.mutedFg }}>
+                {icon}
+            </span>
+            {label}
+        </button>
+    );
+}
+
+// ─── Three-dot context menu (limited actions for shared docs) — via portal ──
+function SharedContextMenu({ doc, anchorRef, onClose, onOpen, onRemove }) {
     const { toast } = useToast();
-    const [openUpward, setOpenUpward] = useState(false);
-
-    // Flip the menu upward if there isn't enough room below the trigger.
-    useEffect(() => {
-        if (!ref.current) return;
-        const rect = ref.current.getBoundingClientRect();
-        const spaceBelow = window.innerHeight - rect.top;
-        const estimatedMenuHeight = 160; // 3 items + divider + 1 danger item
-        setOpenUpward(spaceBelow < estimatedMenuHeight);
-    }, []);
-
-    useEffect(() => {
-        const h = (e) => { if (!ref.current?.contains(e.target)) onClose(); };
-        document.addEventListener("mousedown", h);
-        return () => document.removeEventListener("mousedown", h);
-    }, [onClose]);
 
     const copyLink = () => {
         navigator.clipboard.writeText(`${window.location.origin}/editor/${docPk(doc)}`)
@@ -89,37 +112,19 @@ function SharedContextMenu({ doc, onClose, onOpen, onRemove }) {
         onClose();
     };
 
-    const items = [
-        { icon: "open_in_new", label: "Open", action: () => { onOpen(doc); onClose(); } },
-        { icon: "link", label: "Copy link", action: copyLink },
-        { divider: true },
-        { icon: "person_off", label: "Remove me", action: () => { onRemove(doc); onClose(); }, danger: true },
-    ];
-
     return (
-        <div ref={ref} style={{
-            position: "absolute", right: 0,
-            ...(openUpward ? { bottom: 28 } : { top: 28 }),
-            width: 180, zIndex: 100,
-            maxHeight: "min(240px, calc(100vh - 32px))",
-            overflowY: "auto",
-            background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8,
-            overflowX: "hidden", boxShadow: "0 8px 24px rgba(0,0,0,.6)",
-        }}>
-            {items.map((item, i) =>
-                item.divider
-                    ? <div key={i} style={{ borderTop: `1px solid ${T.border}` }} />
-                    : (
-                        <button key={item.label} onClick={item.action}
-                            style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", background: "none", border: "none", color: item.danger ? "#ef4444" : T.fg, fontSize: 13, cursor: "pointer", textAlign: "left", fontFamily: T.font, transition: "background .12s" }}
-                            onMouseEnter={(e) => e.currentTarget.style.background = item.danger ? "rgba(239,68,68,.08)" : T.muted}
-                            onMouseLeave={(e) => e.currentTarget.style.background = "none"}>
-                            <span className="material-symbols-outlined" style={{ fontSize: 15, color: item.danger ? "#ef4444" : T.mutedFg }}>{item.icon}</span>
-                            {item.label}
-                        </button>
-                    )
-            )}
-        </div>
+        <PortalMenu anchorRef={anchorRef} onClose={onClose} width={180} estimatedHeight={180}>
+            <div style={{
+                background: T.surface, border: `1px solid ${T.border}`,
+                borderRadius: 8, overflow: "hidden",
+                boxShadow: "0 8px 24px rgba(0,0,0,.6)",
+            }}>
+                <MenuItemRow icon="open_in_new" label="Open" onClick={() => { onOpen(doc); onClose(); }} />
+                <MenuItemRow icon="link" label="Copy link" onClick={copyLink} />
+                <div style={{ borderTop: `1px solid ${T.border}` }} />
+                <MenuItemRow icon="person_off" label="Remove me" danger onClick={() => { onRemove(doc); onClose(); }} />
+            </div>
+        </PortalMenu>
     );
 }
 
@@ -182,6 +187,7 @@ function AccessBadge({ canEdit }) {
 function SharedRow({ doc, index, onOpen, onRemove }) {
     const [hov, setHov] = useState(false);
     const [menuOpen, setMenuOpen] = useState(false);
+    const btnRef = useRef(null);
     const cat = inferCategory(doc.title ?? "");
     const catColor = CAT_COLORS[cat] ?? CAT_COLORS.Product;
     const iconColor = CAT_ICON_COLOR[cat] ?? T.primary;
@@ -241,9 +247,10 @@ function SharedRow({ doc, index, onOpen, onRemove }) {
                 <AccessBadge canEdit={canEdit} />
             </div>
 
-            {/* Three-dot menu */}
-            <div style={{ position: "relative" }} onClick={(e) => e.stopPropagation()}>
+            {/* Three-dot menu trigger */}
+            <div onClick={(e) => e.stopPropagation()}>
                 <button
+                    ref={btnRef}
                     onClick={() => setMenuOpen(o => !o)}
                     style={{ width: 28, height: 28, background: menuOpen ? T.muted : "none", border: "none", borderRadius: 5, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: hov || menuOpen ? T.mutedFg : "transparent", transition: "all .15s" }}
                 >
@@ -254,6 +261,7 @@ function SharedRow({ doc, index, onOpen, onRemove }) {
                 {menuOpen && (
                     <SharedContextMenu
                         doc={doc}
+                        anchorRef={btnRef}
                         onClose={() => setMenuOpen(false)}
                         onOpen={onOpen}
                         onRemove={onRemove}

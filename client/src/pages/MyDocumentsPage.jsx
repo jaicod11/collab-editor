@@ -1,9 +1,41 @@
+/**
+ * pages/MyDocumentsPage.jsx
+ * ─────────────────────────────────────────────────────────────────────────────
+ * "My Documents" list/table view converted from Stitch output.
+ *
+ * Features:
+ *   - Category filter pills (All, Product, Design, Engineering, Research, Finance, Marketing)
+ *   - Sort by: Last edited, Created, Title
+ *   - List view (table rows) with icon, title, tag, author, date, three-dot menu
+ *   - Three-dot context menu: Open, Rename, Duplicate, Copy Link, Star, Archive, Move to Trash
+ *   - Search filtering
+ *   - Profile dropdown (shared)
+ *   - Real API wired via useDocument()
+ *
+ * ── Document lifecycle ──────────────────────────────────────────────────────
+ * "Move to Archive" and "Move to Trash" are BOTH soft-deletes — neither one
+ * destroys the document. They just move it to a different status:
+ *   Active → Archived  (shows up on the Archive page, fully restorable)
+ *   Active → Deleted   (shows up on the Trash page, restorable for 30 days)
+ * Permanent, irreversible deletion only happens from the Trash page itself.
+ *
+ * ── Dropdown menu fix ────────────────────────────────────────────────────────
+ * The table wrapper below uses `overflow: hidden` (for its rounded corners).
+ * A normal absolutely-positioned dropdown INSIDE that wrapper gets clipped by
+ * it, regardless of viewport space — flipping the menu up/down doesn't help
+ * because the clip boundary is the table box itself, not the screen edge.
+ * Fix: the three-dot menu is rendered via <PortalMenu> straight into
+ * document.body with `position: fixed`, calculated from the button's real
+ * on-screen coordinates — so it's never inside any overflow:hidden ancestor.
+ */
+
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useDocument } from "../hooks/useDocument";
 import { useToast } from "../components/UI/Toast";
 import { useAuthStore } from "../store/authSlice";
 import Sidebar, { T, Icons } from "../components/Layout/Sidebar";
+import PortalMenu from "../components/UI/PortalMenu";
 import api from "../services/api";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -54,28 +86,32 @@ function getStarred() { try { return new Set(JSON.parse(localStorage.getItem(STA
 function isStarred(id) { return getStarred().has(id); }
 function toggleStar(id) { const s = getStarred(); s.has(id) ? s.delete(id) : s.add(id); localStorage.setItem(STARRED_KEY, JSON.stringify([...s])); return s.has(id); }
 
-// ─── Three-dot context menu ───────────────────────────────────────────────────
-function ContextMenu({ doc, onClose, onOpen, onRename, onDuplicate, onArchive, onMoveToTrash }) {
-    const ref = useRef(null);
+// ─── Menu item row (shared visual style) ──────────────────────────────────────
+function MenuItemRow({ icon, label, onClick, danger, muted }) {
+    return (
+        <button onClick={onClick}
+            style={{
+                width: "100%", display: "flex", alignItems: "center", gap: 10,
+                padding: "9px 14px", background: T.surface, border: "none",
+                color: danger ? "#ef4444" : muted ? T.mutedFg : T.fg,
+                fontSize: 13, cursor: "pointer", textAlign: "left", fontFamily: T.font,
+                transition: "background .12s",
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.background = danger ? "rgba(239,68,68,.08)" : T.muted}
+            onMouseLeave={(e) => e.currentTarget.style.background = T.surface}
+        >
+            <span className="material-symbols-outlined" style={{ fontSize: 15, color: danger ? "#ef4444" : T.mutedFg }}>
+                {icon}
+            </span>
+            {label}
+        </button>
+    );
+}
+
+// ─── Three-dot context menu (rendered via portal — see PortalMenu.jsx) ───────
+function ContextMenu({ doc, anchorRef, onClose, onOpen, onRename, onDuplicate, onArchive, onMoveToTrash }) {
     const { toast } = useToast();
     const [starred, setStarred] = useState(() => isStarred(docPk(doc)));
-    const [openUpward, setOpenUpward] = useState(false);
-
-    // Measure available space below the trigger button.
-    // If there isn't enough room for the full menu, flip it to open upward.
-    useEffect(() => {
-        if (!ref.current) return;
-        const rect = ref.current.getBoundingClientRect();
-        const spaceBelow = window.innerHeight - rect.top;
-        const estimatedMenuHeight = 260; // 5 action items + divider + 2 danger items
-        setOpenUpward(spaceBelow < estimatedMenuHeight);
-    }, []);
-
-    useEffect(() => {
-        const h = (e) => { if (!ref.current?.contains(e.target)) onClose(); };
-        document.addEventListener("mousedown", h);
-        return () => document.removeEventListener("mousedown", h);
-    }, [onClose]);
 
     const copyLink = () => {
         const url = `${window.location.origin}/editor/${docPk(doc)}`;
@@ -90,62 +126,27 @@ function ContextMenu({ doc, onClose, onOpen, onRename, onDuplicate, onArchive, o
         onClose();
     };
 
-    const menuItems = [
-        {
-            group: "actions",
-            items: [
-                { icon: "open_in_new", label: "Open", action: () => { onOpen(doc); onClose(); } },
-                { icon: "edit", label: "Rename", action: () => { onRename(doc); onClose(); } },
-                { icon: "content_copy", label: "Duplicate", action: () => { onDuplicate(doc); onClose(); } },
-                { icon: "link", label: "Copy link", action: copyLink },
-                { icon: starred ? "star_off" : "star", label: starred ? "Remove from starred" : "Add to starred", action: handleStar, gold: !starred },
-            ]
-        },
-        {
-            group: "danger",
-            items: [
-                { icon: "archive", label: "Move to Archive", action: () => { onArchive(doc); onClose(); }, muted: true },
-                { icon: "delete", label: "Move to Trash", action: () => { onMoveToTrash(doc); onClose(); }, danger: true },
-            ]
-        }
-    ];
-
     return (
-        <div ref={ref} style={{
-            position: "absolute", right: 0,
-            // Flip direction based on available viewport space
-            ...(openUpward ? { bottom: 28 } : { top: 28 }),
-            width: 200, zIndex: 100,
-            maxHeight: "min(320px, calc(100vh - 32px))", // never taller than the viewport
-            overflowY: "auto",
-            background: T.surface, border: `1px solid ${T.border}`,
-            borderRadius: 8, overflowX: "hidden",
-            boxShadow: "0 8px 24px rgba(0,0,0,.6)",
-        }}>
-            {menuItems.map((group, gi) => (
-                <div key={gi}>
-                    {gi > 0 && <div style={{ borderTop: `1px solid ${T.border}` }} />}
-                    {group.items.map(({ icon, label, action, danger, muted }) => (
-                        <button key={label} onClick={action}
-                            style={{
-                                width: "100%", display: "flex", alignItems: "center", gap: 10,
-                                padding: "9px 14px", background: "none", border: "none",
-                                color: danger ? "#ef4444" : muted ? T.mutedFg : T.fg,
-                                fontSize: 13, cursor: "pointer", textAlign: "left", fontFamily: T.font,
-                                transition: "background .12s",
-                            }}
-                            onMouseEnter={(e) => e.currentTarget.style.background = danger ? "rgba(239,68,68,.08)" : T.muted}
-                            onMouseLeave={(e) => e.currentTarget.style.background = "none"}
-                        >
-                            <span className="material-symbols-outlined" style={{ fontSize: 15, color: danger ? "#ef4444" : T.mutedFg }}>
-                                {icon}
-                            </span>
-                            {label}
-                        </button>
-                    ))}
-                </div>
-            ))}
-        </div>
+        <PortalMenu anchorRef={anchorRef} onClose={onClose} width={200} estimatedHeight={280}>
+            <div style={{
+                background: T.surface, border: `1px solid ${T.border}`,
+                borderRadius: 8, overflow: "hidden",
+                boxShadow: "0 8px 24px rgba(0,0,0,.6)",
+            }}>
+                <MenuItemRow icon="open_in_new" label="Open" onClick={() => { onOpen(doc); onClose(); }} />
+                <MenuItemRow icon="edit" label="Rename" onClick={() => { onRename(doc); onClose(); }} />
+                <MenuItemRow icon="content_copy" label="Duplicate" onClick={() => { onDuplicate(doc); onClose(); }} />
+                <MenuItemRow icon="link" label="Copy link" onClick={copyLink} />
+                <MenuItemRow
+                    icon={starred ? "star_off" : "star"}
+                    label={starred ? "Remove from starred" : "Add to starred"}
+                    onClick={handleStar}
+                />
+                <div style={{ borderTop: `1px solid ${T.border}` }} />
+                <MenuItemRow icon="archive" label="Move to Archive" muted onClick={() => { onArchive(doc); onClose(); }} />
+                <MenuItemRow icon="delete" label="Move to Trash" danger onClick={() => { onMoveToTrash(doc); onClose(); }} />
+            </div>
+        </PortalMenu>
     );
 }
 
@@ -190,8 +191,6 @@ function RenameModal({ doc, onSave, onClose }) {
 }
 
 // ─── Move-to-Trash confirm modal ──────────────────────────────────────────────
-// Renamed from "DeleteModal" — this is a reversible soft-delete, not a
-// permanent deletion. Permanent deletion only happens on the Trash page.
 function MoveToTrashModal({ doc, onConfirm, onClose }) {
     return (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center" }}
@@ -222,6 +221,7 @@ function MoveToTrashModal({ doc, onConfirm, onClose }) {
 function DocRow({ doc, index, onOpen, onRename, onDuplicate, onArchive, onMoveToTrash }) {
     const [hov, setHov] = useState(false);
     const [menuOpen, setMenuOpen] = useState(false);
+    const btnRef = useRef(null);
     const cat = inferCategory(doc.title ?? "");
     const tag = TAG_STYLE(cat);
 
@@ -272,9 +272,10 @@ function DocRow({ doc, index, onOpen, onRename, onDuplicate, onArchive, onMoveTo
                 {fmtDate(doc.updatedAt ?? doc.createdAt)}
             </span>
 
-            {/* Three-dot menu */}
-            <div style={{ position: "relative" }} onClick={(e) => e.stopPropagation()}>
+            {/* Three-dot menu trigger */}
+            <div onClick={(e) => e.stopPropagation()}>
                 <button
+                    ref={btnRef}
                     onClick={() => setMenuOpen((o) => !o)}
                     style={{
                         width: 28, height: 28, background: menuOpen ? T.muted : "none", border: "none",
@@ -290,6 +291,7 @@ function DocRow({ doc, index, onOpen, onRename, onDuplicate, onArchive, onMoveTo
                 {menuOpen && (
                     <ContextMenu
                         doc={doc}
+                        anchorRef={btnRef}
                         onClose={() => setMenuOpen(false)}
                         onOpen={onOpen}
                         onRename={onRename}

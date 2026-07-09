@@ -1,8 +1,35 @@
+/**
+ * pages/ArchivePage.jsx
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Archived Documents page converted from Stitch HTML output.
+ *
+ * Key differences from TrashPage:
+ *  - Info banner at the TOP (not bottom)
+ *  - "Archived On" date shows "Archived Mar 15" format
+ *  - AUTHOR column (not "Deleted by")
+ *  - Three-dot context menu per row (Open, Restore, Copy link, Delete permanently)
+ *  - Bottom center: "Restore all" (green outlined) + "Delete all permanently"
+ *
+ * API:
+ *  GET  /api/documents?filter=archived  → loads archived docs (status:"Archived")
+ *  PATCH /api/documents/:id { status:"Active" }  → restore
+ *  DELETE /api/documents/:id  → permanent delete
+ *
+ * ── Dropdown menu fix ────────────────────────────────────────────────────────
+ * The table wrapper below uses `overflow: hidden` (for its rounded corners).
+ * A normal absolutely-positioned dropdown INSIDE that wrapper gets clipped by
+ * it regardless of viewport space. Fix: the three-dot menu is rendered via
+ * <PortalMenu> straight into document.body with `position: fixed`, calculated
+ * from the button's real on-screen coordinates — immune to any ancestor's
+ * overflow, scroll, or border-radius.
+ */
+
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "../components/UI/Toast";
 import { useAuthStore } from "../store/authSlice";
 import Sidebar, { T, Icons } from "../components/Layout/Sidebar";
+import PortalMenu from "../components/UI/PortalMenu";
 import api from "../services/api";
 
 // ─── Category tag colors (same across all pages) ──────────────────────────────
@@ -65,26 +92,31 @@ const RestoreIcon = ({ size = 14, color = "currentColor" }) => (
     </svg>
 );
 
-// ─── Context menu (three-dot) ─────────────────────────────────────────────────
-function RowMenu({ doc, onClose, onOpen, onRestore, onDelete }) {
-    const ref = useRef(null);
+// ─── Menu item row (shared visual style) ──────────────────────────────────────
+function MenuItemRow({ icon, label, onClick, danger, green }) {
+    return (
+        <button onClick={onClick}
+            style={{
+                width: "100%", display: "flex", alignItems: "center", gap: 10,
+                padding: "9px 14px", background: T.surface, border: "none",
+                color: danger ? "#ef4444" : green ? T.primary : T.fg,
+                fontSize: 13, cursor: "pointer", textAlign: "left", fontFamily: T.font,
+                transition: "background .12s",
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.background = danger ? "rgba(239,68,68,.08)" : green ? "rgba(34,197,94,.06)" : T.muted}
+            onMouseLeave={(e) => e.currentTarget.style.background = T.surface}
+        >
+            <span className="material-symbols-outlined" style={{ fontSize: 15, color: danger ? "#ef4444" : green ? T.primary : T.mutedFg }}>
+                {icon}
+            </span>
+            {label}
+        </button>
+    );
+}
+
+// ─── Context menu (three-dot) — rendered via portal (see PortalMenu.jsx) ─────
+function RowMenu({ doc, anchorRef, onClose, onOpen, onRestore, onDelete }) {
     const { toast } = useToast();
-    const [openUpward, setOpenUpward] = useState(false);
-
-    // Flip the menu upward if there isn't enough room below the trigger.
-    useEffect(() => {
-        if (!ref.current) return;
-        const rect = ref.current.getBoundingClientRect();
-        const spaceBelow = window.innerHeight - rect.top;
-        const estimatedMenuHeight = 200; // 3 items + divider + 1 danger item
-        setOpenUpward(spaceBelow < estimatedMenuHeight);
-    }, []);
-
-    useEffect(() => {
-        const h = (e) => { if (!ref.current?.contains(e.target)) onClose(); };
-        document.addEventListener("mousedown", h);
-        return () => document.removeEventListener("mousedown", h);
-    }, [onClose]);
 
     const copyLink = () => {
         navigator.clipboard.writeText(`${window.location.origin}/editor/${docPk(doc)}`)
@@ -92,48 +124,20 @@ function RowMenu({ doc, onClose, onOpen, onRestore, onDelete }) {
         onClose();
     };
 
-    const items = [
-        { icon: "open_in_new", label: "Open", action: () => { onOpen(doc); onClose(); } },
-        { icon: "restore", label: "Restore", action: () => { onRestore(doc); onClose(); }, green: true },
-        { icon: "link", label: "Copy link", action: copyLink },
-        { divider: true },
-        { icon: "delete", label: "Delete permanently", action: () => { onDelete(doc); onClose(); }, danger: true },
-    ];
-
     return (
-        <div ref={ref} style={{
-            position: "absolute", right: 0,
-            ...(openUpward ? { bottom: 28 } : { top: 28 }),
-            width: 195, zIndex: 100,
-            maxHeight: "min(260px, calc(100vh - 32px))",
-            overflowY: "auto",
-            background: T.surface, border: `1px solid ${T.border}`,
-            borderRadius: 8, overflowX: "hidden",
-            boxShadow: "0 8px 24px rgba(0,0,0,.6)",
-        }}>
-            {items.map((item, i) =>
-                item.divider
-                    ? <div key={i} style={{ borderTop: `1px solid ${T.border}` }} />
-                    : (
-                        <button key={item.label} onClick={item.action}
-                            style={{
-                                width: "100%", display: "flex", alignItems: "center", gap: 10,
-                                padding: "9px 14px", background: "none", border: "none",
-                                color: item.danger ? "#ef4444" : item.green ? T.primary : T.fg,
-                                fontSize: 13, cursor: "pointer", textAlign: "left",
-                                fontFamily: T.font, transition: "background .12s",
-                            }}
-                            onMouseEnter={(e) => e.currentTarget.style.background = item.danger ? "rgba(239,68,68,.08)" : item.green ? "rgba(34,197,94,.06)" : T.muted}
-                            onMouseLeave={(e) => e.currentTarget.style.background = "none"}
-                        >
-                            <span className="material-symbols-outlined" style={{ fontSize: 15, color: item.danger ? "#ef4444" : item.green ? T.primary : T.mutedFg }}>
-                                {item.icon}
-                            </span>
-                            {item.label}
-                        </button>
-                    )
-            )}
-        </div>
+        <PortalMenu anchorRef={anchorRef} onClose={onClose} width={195} estimatedHeight={220}>
+            <div style={{
+                background: T.surface, border: `1px solid ${T.border}`,
+                borderRadius: 8, overflow: "hidden",
+                boxShadow: "0 8px 24px rgba(0,0,0,.6)",
+            }}>
+                <MenuItemRow icon="open_in_new" label="Open" onClick={() => { onOpen(doc); onClose(); }} />
+                <MenuItemRow icon="restore" label="Restore" green onClick={() => { onRestore(doc); onClose(); }} />
+                <MenuItemRow icon="link" label="Copy link" onClick={copyLink} />
+                <div style={{ borderTop: `1px solid ${T.border}` }} />
+                <MenuItemRow icon="delete" label="Delete permanently" danger onClick={() => { onDelete(doc); onClose(); }} />
+            </div>
+        </PortalMenu>
     );
 }
 
@@ -169,6 +173,7 @@ function ConfirmModal({ title, message, confirmLabel, onConfirm, onClose, danger
 function ArchiveRow({ doc, index, onOpen, onRestore, onDelete }) {
     const [hov, setHov] = useState(false);
     const [menu, setMenu] = useState(false);
+    const btnRef = useRef(null);
     const cat = inferCategory(doc.title ?? "");
     const catColor = CAT[cat] ?? CAT.General;
     const iconColor = CAT_ICON[cat] ?? "#7a7a7a";
@@ -219,9 +224,10 @@ function ArchiveRow({ doc, index, onOpen, onRestore, onDelete }) {
                 {fmtArchived(doc.updatedAt ?? doc.createdAt)}
             </span>
 
-            {/* Three-dot */}
-            <div style={{ position: "relative" }} onClick={(e) => e.stopPropagation()}>
+            {/* Three-dot trigger */}
+            <div onClick={(e) => e.stopPropagation()}>
                 <button
+                    ref={btnRef}
                     onClick={() => setMenu((o) => !o)}
                     style={{ width: 28, height: 28, background: menu ? T.muted : "none", border: "none", borderRadius: 5, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: hov || menu ? T.mutedFg : "transparent", transition: "all .15s" }}>
                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round">
@@ -229,7 +235,7 @@ function ArchiveRow({ doc, index, onOpen, onRestore, onDelete }) {
                     </svg>
                 </button>
                 {menu && (
-                    <RowMenu doc={doc} onClose={() => setMenu(false)} onOpen={onOpen} onRestore={onRestore} onDelete={onDelete} />
+                    <RowMenu doc={doc} anchorRef={btnRef} onClose={() => setMenu(false)} onOpen={onOpen} onRestore={onRestore} onDelete={onDelete} />
                 )}
             </div>
         </div>
@@ -250,7 +256,8 @@ export default function ArchivePage() {
     const [deleteAllOpen, setDeleteAllOpen] = useState(false);
     const [restoreAllOpen, setRestoreAllOpen] = useState(false);
 
-    // Load archived docs
+    // Load archived docs — filter:"archived" scopes the query on the backend
+    // to status:"Archived" directly, so no client-side filtering needed.
     useEffect(() => {
         setLoading(true);
         api.get("/documents", { params: { filter: "archived" } })
