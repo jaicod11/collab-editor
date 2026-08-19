@@ -1,15 +1,17 @@
 /**
- * models/User.js
+ * server/src/models/User.js — updated
+ * Added `bio` field to support the Profile tab on the Settings page.
  */
 const mongoose = require("mongoose");
-const bcrypt   = require("bcryptjs");
+const bcrypt = require("bcryptjs");
 
 const userSchema = new mongoose.Schema(
   {
-    name:     { type: String, required: true, trim: true },
-    email:    { type: String, required: true, unique: true, lowercase: true },
+    name: { type: String, required: true, trim: true },
+    email: { type: String, required: true, unique: true, lowercase: true },
     password: { type: String, required: true, select: false },
-    avatar:   { type: String, default: "" },
+    avatar: { type: String, default: "" },
+    bio: { type: String, default: "", maxlength: 280 }, // ← new
   },
   { timestamps: true }
 );

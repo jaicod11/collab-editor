@@ -10,6 +10,7 @@
 
 const jwt              = require("jsonwebtoken");
 const { redisSub, redisClient } = require("../config/redis");
+const redisService     = require("../services/redisService");
 const documentHandler  = require("./handlers/documentHandler");
 const presenceHandler  = require("./handlers/presenceHandler");
 
@@ -18,17 +19,33 @@ const CHANNEL_PREFIX = "doc:ops:"; // Redis pub/sub channel per document
 module.exports = function initSocket(io) {
 
   // ── Auth middleware ────────────────────────────────────────────────────────
-  io.use((socket, next) => {
-    try {
-      const token = socket.handshake.auth?.token;
-      if (!token) return next(new Error("No token provided"));
+  io.use(async (socket, next) => {
+    const token = socket.handshake.auth?.token;
+    if (!token) return next(new Error("No token provided"));
 
-      const payload = jwt.verify(token, process.env.JWT_SECRET);
-      socket.user = { id: payload.id, name: payload.name, email: payload.email };
-      next();
+    // ── 1. Verify the signature ───────────────────────────────────────────
+    let payload;
+    try {
+      payload = jwt.verify(token, process.env.JWT_SECRET);
     } catch (err) {
-      next(new Error("Invalid token"));
+      return next(new Error("Invalid token"));
     }
+
+    // ── 2. Confirm the session record still exists ────────────────────────
+    // Mirrors authMiddleware.protect — without this a token revoked by logout
+    // or account deletion could still open a socket and edit documents.
+    let session;
+    try {
+      session = await redisService.getSession(payload.id);
+    } catch (err) {
+      console.error("[Socket] Session store unavailable:", err.message);
+      return next(new Error("Auth service temporarily unavailable"));
+    }
+
+    if (!session) return next(new Error("Session expired or revoked"));
+
+    socket.user = { id: payload.id, name: payload.name, email: payload.email };
+    next();
   });
 
   // ── Redis subscriber — forward published ops to correct Socket.io room ─────

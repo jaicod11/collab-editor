@@ -29,15 +29,54 @@ const Operation = require("../../models/Operation");
 const otService = require("../../services/otService");
 const redisService = require("../../services/redisService");
 const snapshotService = require("../../services/snapshotService");
+const documentService = require("../../services/documentService");
 
 module.exports = function documentHandler(io, socket, redisClient, CHANNEL_PREFIX) {
   const { user } = socket;
+
+  // ── Per-socket authorization cache ────────────────────────────────────────
+  // assertAccess() hits MongoDB, and op:submit fires on every keystroke, so a
+  // granted result is memoised for as long as this socket stays in the room.
+  // This closure is created once per connection, so the cache is inherently
+  // scoped to (socket, docId). Cleared on doc:leave and on disconnect.
+  //
+  // Only grants are cached. A denial is re-checked every time, so a user who
+  // is added as a collaborator mid-session is picked up without reconnecting,
+  // and a stale denial can never be served from cache.
+  const grantedDocs = new Set();
+
+  /**
+   * Verify the connected user may read/write this document.
+   * Emits a generic doc:error and returns false when access is refused —
+   * "Access denied" is used for both 403 and 404 so the socket API cannot be
+   * used to probe which document IDs exist.
+   *
+   * @returns {Promise<boolean>} true when access is granted
+   */
+  async function ensureAccess(docId) {
+    if (grantedDocs.has(docId)) return true;
+
+    try {
+      await documentService.assertAccess(docId, user.id);
+      grantedDocs.add(docId);
+      return true;
+    } catch (err) {
+      console.warn(
+        `[documentHandler] access refused: user=${user.id} doc=${docId} (${err.statusCode ?? 500})`
+      );
+      socket.emit("doc:error", { message: "Access denied" });
+      return false;
+    }
+  }
 
   // ── doc:join ──────────────────────────────────────────────────────────────
   socket.on("doc:join", async ({ docId }) => {
     if (!docId) return;
 
     try {
+      // ── Authorization — BEFORE joining the room or loading any content ──
+      if (!(await ensureAccess(docId))) return;
+
       // Join Socket.io room
       socket.join(`doc:${docId}`);
 
@@ -78,8 +117,16 @@ module.exports = function documentHandler(io, socket, redisClient, CHANNEL_PREFI
   // ── doc:leave ─────────────────────────────────────────────────────────────
   socket.on("doc:leave", ({ docId }) => {
     if (!docId) return;
+    grantedDocs.delete(docId); // room membership ended — drop the cached grant
     socket.leave(`doc:${docId}`);
     socket.to(`doc:${docId}`).emit("presence:leave", { userId: user.id });
+  });
+
+  // ── disconnect ────────────────────────────────────────────────────────────
+  // Belt-and-braces: the closure dies with the socket, but clearing explicitly
+  // means a cached grant can never outlive the connection that earned it.
+  socket.on("disconnect", () => {
+    grantedDocs.clear();
   });
 
   // ── op:submit ─────────────────────────────────────────────────────────────
@@ -89,6 +136,16 @@ module.exports = function documentHandler(io, socket, redisClient, CHANNEL_PREFI
     const lockKey = `lock:doc:${docId}`;
 
     try {
+      // ── 0a. Authorization — BEFORE taking the lock ──────────────────────
+      if (!(await ensureAccess(docId))) return;
+
+      // ── 0b. Validate op shape — BEFORE taking the lock ──────────────────
+      // Rejects malformed indices that String.slice would otherwise accept
+      // and silently corrupt the document with.
+      if (!otService.validateOp(op)) {
+        return socket.emit("doc:error", { message: "Invalid operation" });
+      }
+
       // ── 1. Acquire optimistic lock (100ms TTL) ──────────────────────────
       const acquired = await redisClient.set(lockKey, socket.id, {
         NX: true,
@@ -147,10 +204,13 @@ module.exports = function documentHandler(io, socket, redisClient, CHANNEL_PREFI
       opRecord.save().catch((e) => console.error("[Op persist]", e));
 
       // ── 7. Update document in MongoDB (async) ────────────────────────
+      // NOTE: this deliberately does NOT add the editor to `collaborators`.
+      // Membership is never granted as a side effect of editing — access is
+      // enforced up front by ensureAccess() above, so anyone reaching this
+      // line is already the owner or an existing collaborator.
       Document.findByIdAndUpdate(docId, {
         content: newContent,
         revision: newRevision,
-        $addToSet: { collaborators: user.id },
       }).catch((e) => console.error("[Doc update]", e));
 
       // ── 8. Update Redis cache ─────────────────────────────────────────
@@ -192,6 +252,9 @@ module.exports = function documentHandler(io, socket, redisClient, CHANNEL_PREFI
     if (!docId || !versionId) return;
 
     try {
+      // ── Authorization — BEFORE reading or rewriting any content ─────────
+      if (!(await ensureAccess(docId))) return;
+
       const op = await Operation.findById(versionId).lean();
       if (!op) return socket.emit("doc:error", { message: "Version not found" });
 

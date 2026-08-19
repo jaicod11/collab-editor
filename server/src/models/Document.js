@@ -1,6 +1,3 @@
-/**
- * models/Document.js
- */
 const mongoose = require("mongoose");
 
 const documentSchema = new mongoose.Schema(
@@ -10,7 +7,11 @@ const documentSchema = new mongoose.Schema(
     revision: { type: Number, default: 0 },
     owner: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     collaborators: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
-    status: { type: String, enum: ["Active", "Archived", "Deleted"], default: "Active" },
+    status: {
+      type: String,
+      enum: ["Active", "Archived", "Deleted"], // ← "Deleted" added
+      default: "Active",
+    },
     snapshot: {
       content: String,
       revision: Number,
@@ -20,8 +21,7 @@ const documentSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Full-text search index on title + content
 documentSchema.index({ title: "text", content: "text" });
 
 module.exports = mongoose.model("Document", documentSchema);
-
-// Operation model is now in models/Operation.js — do NOT define it here

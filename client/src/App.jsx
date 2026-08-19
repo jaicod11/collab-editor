@@ -1,3 +1,8 @@
+/**
+ * App.jsx — final wired version
+ * All routes, guards, and ToastProvider.
+ */
+
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { ToastProvider } from "./components/UI/Toast";
 import AuthPage from "./pages/AuthPage";
@@ -8,6 +13,7 @@ import StarredPage from "./pages/StarredPage";
 import TrashPage from "./pages/TrashPage";
 import ArchivePage from "./pages/ArchivePage";
 import NewDocumentPage from "./pages/NewDocumentPage";
+import SettingsPage from "./pages/SettingsPage";
 import EditorPage from "./pages/EditorPage";
 import { useAuthStore } from "./store/authSlice";
 
@@ -42,6 +48,7 @@ export default function App() {
         <Routes>
           {/* ── Public ──────────────────────────────────────────────────── */}
           <Route path="/auth" element={<PublicRoute><AuthPage /></PublicRoute>} />
+
           {/* ── Protected ───────────────────────────────────────────────── */}
           <Route path="/"
             element={<ProtectedRoute><DocumentDashboard /></ProtectedRoute>}
@@ -63,6 +70,9 @@ export default function App() {
           />
           <Route path="/archive"
             element={<ProtectedRoute><ArchivePage /></ProtectedRoute>}
+          />
+          <Route path="/settings"
+            element={<ProtectedRoute><SettingsPage /></ProtectedRoute>}
           />
           <Route path="/editor/:docId"
             element={<ProtectedRoute><EditorPage /></ProtectedRoute>}

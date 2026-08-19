@@ -1,12 +1,19 @@
 /**
  * components/Layout/Sidebar.jsx
  * ─────────────────────────────────────────────────────────────────────────────
- * Shared sidebar used by DocumentDashboard and MyDocumentsPage.
- * Design tokens from Stitch CollabDocsHome + MyDocuments outputs.
+ * Shared sidebar used by every page (Dashboard, MyDocuments, Shared, Starred,
+ * Archive, Trash). Now with REAL workspace functionality:
+ *   - Workspaces are loaded from the backend (GET /api/workspaces) instead of
+ *     being a hardcoded showcase array.
+ *   - "+ Add workspace" opens a modal: name + color picker → POST /api/workspaces
+ *   - Hovering a workspace reveals a delete (×) icon → confirm → DELETE
+ *   - Empty / loading states included.
  */
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
+import { useWorkspace } from "../../hooks/useWorkspace";
+import { useToast } from "../UI/Toast";
 
 export const T = {
     bg: "#0d0d0d",
@@ -75,13 +82,12 @@ export const Icons = {
             <circle cx="12" cy="12" r="3" />
         </svg>
     ),
+    Close: ({ size = 14 }) => (
+        <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M18 6 6 18M6 6l12 12" />
+        </svg>
+    ),
 };
-
-const WORKSPACES = [
-    { initials: "DT", label: "Design Team", color: "#22c55e" },
-    { initials: "EN", label: "Engineering", color: "#3b82f6" },
-    { initials: "MK", label: "Marketing", color: "#f59e0b" },
-];
 
 const NAV_ITEMS = [
     { id: "home", icon: <Icons.Home />, label: "Home", path: "/" },
@@ -92,6 +98,18 @@ const NAV_ITEMS = [
     { id: "trash", icon: <Icons.Trash />, label: "Trash", path: "/trash" },
 ];
 
+// ─── Color palette for new workspaces ─────────────────────────────────────────
+const COLOR_PALETTE = ["#22c55e", "#3b82f6", "#f59e0b", "#a78bfa", "#ec4899", "#ef4444", "#14b8a6", "#eab308"];
+
+function workspaceInitials(name = "") {
+    const words = name.trim().split(/\s+/).filter(Boolean);
+    if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase();
+    return name.trim().slice(0, 2).toUpperCase() || "WS";
+}
+
+function docPk(w) { return w?._id ?? w?.id ?? ""; }
+
+// ─── Nav item ─────────────────────────────────────────────────────────────────
 function NavItem({ icon, label, active, onClick }) {
     const [hov, setHov] = useState(false);
     return (
@@ -114,8 +132,182 @@ function NavItem({ icon, label, active, onClick }) {
     );
 }
 
+// ─── Create workspace modal ───────────────────────────────────────────────────
+function CreateWorkspaceModal({ onCreate, onClose }) {
+    const [name, setName] = useState("");
+    const [color, setColor] = useState(COLOR_PALETTE[0]);
+    const [saving, setSaving] = useState(false);
+    const inputRef = useRef(null);
+
+    useEffect(() => { inputRef.current?.focus(); }, []);
+
+    const submit = async (e) => {
+        e.preventDefault();
+        if (!name.trim() || saving) return;
+        setSaving(true);
+        const result = await onCreate(name.trim(), color);
+        setSaving(false);
+        if (result) onClose();
+    };
+
+    return (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}
+            onClick={onClose}>
+            <div onClick={(e) => e.stopPropagation()}
+                style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: 24, width: 360, boxShadow: "0 20px 60px rgba(0,0,0,.6)" }}>
+
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+                    <h3 style={{ fontSize: 16, fontWeight: 600, color: T.fg, fontFamily: T.font }}>Create workspace</h3>
+                    <button onClick={onClose} type="button"
+                        style={{ background: "none", border: "none", color: T.mutedFg, cursor: "pointer", display: "flex", padding: 2 }}
+                        onMouseEnter={(e) => e.currentTarget.style.color = T.fg}
+                        onMouseLeave={(e) => e.currentTarget.style.color = T.mutedFg}>
+                        <Icons.Close />
+                    </button>
+                </div>
+
+                <form onSubmit={submit}>
+                    <label style={{ fontSize: 11, fontWeight: 500, color: T.mutedFg, textTransform: "uppercase", letterSpacing: "0.08em", display: "block", marginBottom: 6 }}>
+                        Workspace name
+                    </label>
+                    <input
+                        ref={inputRef}
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                        placeholder="e.g. Product Team"
+                        maxLength={40}
+                        style={{ width: "100%", background: T.muted, border: `1px solid ${T.border}`, borderRadius: 6, padding: "10px 12px", color: T.fg, fontSize: 14, fontFamily: T.font, outline: "none", marginBottom: 18 }}
+                        onFocus={(e) => e.target.style.borderColor = T.primary}
+                        onBlur={(e) => e.target.style.borderColor = T.border}
+                    />
+
+                    <label style={{ fontSize: 11, fontWeight: 500, color: T.mutedFg, textTransform: "uppercase", letterSpacing: "0.08em", display: "block", marginBottom: 10 }}>
+                        Color
+                    </label>
+                    <div style={{ display: "flex", gap: 8, marginBottom: 22, flexWrap: "wrap" }}>
+                        {COLOR_PALETTE.map((c) => (
+                            <button key={c} type="button" onClick={() => setColor(c)}
+                                title={c}
+                                style={{
+                                    width: 28, height: 28, borderRadius: 7, background: c, cursor: "pointer",
+                                    border: color === c ? `2px solid ${T.fg}` : "2px solid transparent",
+                                    boxShadow: color === c ? `0 0 0 3px ${T.surface}, 0 0 0 5px ${c}55` : "none",
+                                    transition: "all .12s",
+                                }}
+                            />
+                        ))}
+                    </div>
+
+                    {/* Live preview */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", background: T.muted, borderRadius: 6, marginBottom: 22 }}>
+                        <div style={{ width: 22, height: 22, borderRadius: 5, background: color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700, color: "#0d0d0d", flexShrink: 0 }}>
+                            {workspaceInitials(name || "New Workspace")}
+                        </div>
+                        <span style={{ fontSize: 13, color: T.fg, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {name.trim() || "Workspace preview"}
+                        </span>
+                    </div>
+
+                    <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                        <button type="button" onClick={onClose}
+                            style={{ padding: "8px 16px", background: "none", border: `1px solid ${T.border}`, color: T.mutedFg, borderRadius: 6, fontSize: 13, cursor: "pointer", fontFamily: T.font }}>
+                            Cancel
+                        </button>
+                        <button type="submit" disabled={saving || !name.trim()}
+                            style={{ padding: "8px 16px", background: T.primary, border: "none", color: T.primFg, borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: T.font, opacity: (saving || !name.trim()) ? .6 : 1 }}>
+                            {saving ? "Creating…" : "Create"}
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    );
+}
+
+// ─── Delete workspace confirm modal ───────────────────────────────────────────
+function DeleteWorkspaceModal({ workspace, onConfirm, onClose }) {
+    return (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}
+            onClick={onClose}>
+            <div onClick={(e) => e.stopPropagation()}
+                style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: 24, width: 380, boxShadow: "0 20px 60px rgba(0,0,0,.6)" }}>
+                <h3 style={{ fontSize: 16, fontWeight: 600, color: T.fg, marginBottom: 8, fontFamily: T.font }}>Delete workspace</h3>
+                <p style={{ fontSize: 13, color: T.mutedFg, marginBottom: 24, lineHeight: 1.6 }}>
+                    Delete "<strong style={{ color: T.fg }}>{workspace.name}</strong>"? This cannot be undone.
+                </p>
+                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                    <button onClick={onClose}
+                        style={{ padding: "8px 16px", background: "none", border: `1px solid ${T.border}`, color: T.mutedFg, borderRadius: 6, fontSize: 13, cursor: "pointer", fontFamily: T.font }}>
+                        Cancel
+                    </button>
+                    <button onClick={() => { onConfirm(workspace); onClose(); }}
+                        style={{ padding: "8px 16px", background: "#ef4444", border: "none", color: "#fff", borderRadius: 6, fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: T.font }}>
+                        Delete
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// ─── Single workspace row ─────────────────────────────────────────────────────
+function WorkspaceRow({ ws, onDelete }) {
+    const [hov, setHov] = useState(false);
+    return (
+        <div
+            onMouseEnter={() => setHov(true)}
+            onMouseLeave={() => setHov(false)}
+            style={{
+                display: "flex", alignItems: "center", gap: 10, padding: "6px 8px",
+                borderRadius: 6, background: hov ? T.muted : "none",
+                color: hov ? T.fg : T.mutedFg, fontSize: 13, fontFamily: T.font,
+                transition: "all .15s", cursor: "default",
+            }}
+        >
+            <div style={{
+                width: 20, height: 20, borderRadius: 4, background: ws.color || T.primary, flexShrink: 0,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: 9, fontWeight: 700, color: "#0d0d0d",
+            }}>
+                {workspaceInitials(ws.name)}
+            </div>
+            <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ws.name}</span>
+            {hov && (
+                <button onClick={() => onDelete(ws)} title="Delete workspace"
+                    style={{ background: "none", border: "none", color: T.mutedFg, cursor: "pointer", padding: 2, display: "flex", flexShrink: 0 }}
+                    onMouseEnter={(e) => e.currentTarget.style.color = "#ef4444"}
+                    onMouseLeave={(e) => e.currentTarget.style.color = T.mutedFg}>
+                    <Icons.Close size={13} />
+                </button>
+            )}
+        </div>
+    );
+}
+
+// ─── ROOT: Sidebar ────────────────────────────────────────────────────────────
 export default function Sidebar({ activeTab, onNewDoc }) {
     const navigate = useNavigate();
+    const { toast } = useToast();
+    const { workspaces, loading, loadWorkspaces, createWorkspace, deleteWorkspace } = useWorkspace();
+
+    const [modalOpen, setModalOpen] = useState(false);
+    const [deleteTarget, setDeleteTarget] = useState(null);
+
+    useEffect(() => { loadWorkspaces(); }, []);
+
+    const handleCreate = async (name, color) => {
+        const result = await createWorkspace(name, color);
+        if (result) toast.success(`"${name}" workspace created`);
+        else toast.error("Failed to create workspace");
+        return result;
+    };
+
+    const handleDelete = async (ws) => {
+        const ok = await deleteWorkspace(docPk(ws));
+        if (ok) toast.success(`"${ws.name}" deleted`);
+        else toast.error("Failed to delete workspace");
+    };
+
     return (
         <aside style={{
             width: 240, minWidth: 240, background: T.surface,
@@ -162,33 +354,35 @@ export default function Sidebar({ activeTab, onNewDoc }) {
 
             {/* Workspaces */}
             <div style={{ padding: "0 12px" }}>
-                <p style={{ fontSize: 11, fontWeight: 500, color: T.mutedFg, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8, paddingLeft: 4 }}>
-                    Workspaces
-                </p>
-                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                    {WORKSPACES.map((ws) => {
-                        const [hov, setHov] = useState(false);
-                        return (
-                            <button key={ws.initials}
-                                onMouseEnter={() => setHov(true)}
-                                onMouseLeave={() => setHov(false)}
-                                style={{
-                                    display: "flex", alignItems: "center", gap: 10, padding: "6px 8px",
-                                    borderRadius: 6, background: hov ? T.muted : "none", border: "none",
-                                    cursor: "pointer", color: hov ? T.fg : T.mutedFg, fontSize: 13,
-                                    fontFamily: T.font, textAlign: "left", transition: "all .15s",
-                                }}>
-                                <div style={{
-                                    width: 20, height: 20, borderRadius: 4, background: ws.color, flexShrink: 0,
-                                    display: "flex", alignItems: "center", justifyContent: "center",
-                                    fontSize: 9, fontWeight: 700, color: "#0d0d0d",
-                                }}>{ws.initials}</div>
-                                {ws.label}
-                            </button>
-                        );
-                    })}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, paddingLeft: 4 }}>
+                    <p style={{ fontSize: 11, fontWeight: 500, color: T.mutedFg, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+                        Workspaces
+                    </p>
                 </div>
-                <button style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 8px", background: "none", border: "none", color: T.mutedFg, fontSize: 12, cursor: "pointer", fontFamily: T.font }}>
+
+                <div style={{ display: "flex", flexDirection: "column", gap: 2, marginBottom: 6 }}>
+                    {loading ? (
+                        <div style={{ display: "flex", justifyContent: "center", padding: "10px 0" }}>
+                            <svg style={{ animation: "spin .8s linear infinite", width: 16, height: 16, color: T.mutedFg }} viewBox="0 0 24 24" fill="none">
+                                <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" style={{ opacity: .25 }} />
+                                <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" style={{ opacity: .75 }} />
+                            </svg>
+                        </div>
+                    ) : workspaces.length === 0 ? (
+                        <p style={{ fontSize: 12, color: T.mutedFg, padding: "4px 8px", fontStyle: "italic" }}>
+                            No workspaces yet
+                        </p>
+                    ) : (
+                        workspaces.map((ws) => (
+                            <WorkspaceRow key={docPk(ws)} ws={ws} onDelete={(w) => setDeleteTarget(w)} />
+                        ))
+                    )}
+                </div>
+
+                <button onClick={() => setModalOpen(true)}
+                    style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 8px", background: "none", border: "none", color: T.mutedFg, fontSize: 12, cursor: "pointer", fontFamily: T.font, width: "100%" }}
+                    onMouseEnter={(e) => e.currentTarget.style.color = T.fg}
+                    onMouseLeave={(e) => e.currentTarget.style.color = T.mutedFg}>
                     <Icons.Plus size={12} /> Add workspace
                 </button>
             </div>
@@ -203,6 +397,16 @@ export default function Sidebar({ activeTab, onNewDoc }) {
                     <Icons.Settings /> Settings
                 </button>
             </div>
+
+            {/* Modals */}
+            {modalOpen && (
+                <CreateWorkspaceModal onCreate={handleCreate} onClose={() => setModalOpen(false)} />
+            )}
+            {deleteTarget && (
+                <DeleteWorkspaceModal workspace={deleteTarget} onConfirm={handleDelete} onClose={() => setDeleteTarget(null)} />
+            )}
+
+            <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
         </aside>
     );
 }

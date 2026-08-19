@@ -1,3 +1,22 @@
+/**
+ * server/src/controllers/documentController.js — updated
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Two fixes delivered here that were previously only described in chat text:
+ *
+ * 1. `list()` now scopes every query by status:
+ *      filter=all/owned/shared (default) → status: "Active" only
+ *      filter=archived                    → status: "Archived"
+ *      filter=trash                       → status: "Deleted"
+ *    Before this fix, Archived/Deleted documents were leaking into
+ *    My Documents and the Dashboard because status was never filtered.
+ *
+ * 2. New `leave()` endpoint — PATCH /api/documents/:id/leave
+ *    Removes the current user from a document's collaborators list.
+ *    This is what SharedWithMePage.jsx's "Remove me" menu item calls.
+ *    It was referenced in the frontend but never actually implemented
+ *    on the backend until now.
+ */
+
 const Document = require("../models/Document");
 const redisService = require("../services/redisService");
 
@@ -13,6 +32,12 @@ exports.list = async (req, res, next) => {
 
     if (filter === "owned") query = { owner: userId };
     if (filter === "shared") query = { collaborators: userId, owner: { $ne: userId } };
+
+    // ── Status scoping ────────────────────────────────────────────────────
+    // "all" / "owned" / "shared" only ever return Active documents — this is
+    // what My Documents, Dashboard, and Shared with Me should show.
+    // Archived and Trash (soft-deleted) docs are fetched via their own
+    // dedicated filter values so they never leak into the normal views.
     if (filter === "archived") {
       query.status = "Archived";
     } else if (filter === "trash") {
@@ -43,13 +68,14 @@ exports.list = async (req, res, next) => {
 // ── POST /api/documents ───────────────────────────────────────────────────────
 exports.create = async (req, res, next) => {
   try {
-    const { title = "Untitled Document" } = req.body;
+    const { title = "Untitled Document", content = "" } = req.body;
 
     const doc = await Document.create({
       title,
-      content: "",
+      content,
       revision: 0,
       owner: req.user.id,
+      status: "Active",
     });
 
     res.status(201).json(doc);
@@ -64,7 +90,6 @@ exports.getOne = async (req, res, next) => {
     const docId = req.params.id;
     const userId = req.user.id;
 
-    // Check Redis cache first
     let doc = await redisService.getDocCache(docId);
     if (!doc) {
       doc = await Document.findById(docId)
@@ -75,7 +100,6 @@ exports.getOne = async (req, res, next) => {
       await redisService.setDocCache(docId, doc);
     }
 
-    // Access check
     const isOwner = doc.owner?._id?.toString() === userId || doc.owner?.toString() === userId;
     const isCollab = (doc.collaborators ?? []).some(
       (c) => c._id?.toString() === userId || c.toString() === userId
@@ -91,12 +115,18 @@ exports.getOne = async (req, res, next) => {
 };
 
 // ── PATCH /api/documents/:id ──────────────────────────────────────────────────
+// Used for: rename (title), status changes (Active/Archived/Deleted restore-or-move)
 exports.update = async (req, res, next) => {
   try {
     const { title, status } = req.body;
     const updates = {};
     if (title !== undefined) updates.title = title;
-    if (status !== undefined) updates.status = status;
+    if (status !== undefined) {
+      if (!["Active", "Archived", "Deleted"].includes(status)) {
+        return res.status(400).json({ message: "Invalid status value" });
+      }
+      updates.status = status;
+    }
 
     const doc = await Document.findOneAndUpdate(
       { _id: req.params.id, owner: req.user.id },
@@ -106,7 +136,6 @@ exports.update = async (req, res, next) => {
 
     if (!doc) return res.status(404).json({ message: "Document not found or access denied" });
 
-    // Invalidate cache
     await redisService.invalidateDocCache(req.params.id);
 
     res.json(doc);
@@ -115,7 +144,37 @@ exports.update = async (req, res, next) => {
   }
 };
 
+// ── PATCH /api/documents/:id/leave ────────────────────────────────────────────
+// Removes the CURRENT USER from a document's collaborator list.
+// Used by the "Remove me" action on Shared with Me — a collaborator can
+// remove themselves from a doc they don't own, without needing owner rights.
+exports.leave = async (req, res, next) => {
+  try {
+    const docId = req.params.id;
+    const userId = req.user.id;
+
+    const doc = await Document.findOneAndUpdate(
+      { _id: docId, collaborators: userId }, // must currently be a collaborator
+      { $pull: { collaborators: userId } },
+      { new: true }
+    );
+
+    if (!doc) {
+      return res.status(404).json({ message: "Document not found or you are not a collaborator" });
+    }
+
+    await redisService.invalidateDocCache(docId);
+
+    res.json({ message: "Removed from document" });
+  } catch (err) {
+    next(err);
+  }
+};
+
 // ── DELETE /api/documents/:id ─────────────────────────────────────────────────
+// Permanent, irreversible delete. Only ever called from the Trash page's
+// "Delete permanently" action — never from "Move to Trash" (that's a PATCH
+// to status:"Deleted" instead, see update() above).
 exports.remove = async (req, res, next) => {
   try {
     const doc = await Document.findOneAndDelete({

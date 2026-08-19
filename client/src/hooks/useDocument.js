@@ -1,11 +1,11 @@
 /**
- * hooks/useDocument.js
+ * hooks/useDocument.js — updated
  * ─────────────────────────────────────────────────────────────────────────────
- * Document CRUD operations via the REST API.
- * Used by DocumentDashboard and EditorPage.
- *
- * Usage:
- *   const { documents, loading, createDoc, deleteDoc, updateTitle } = useDocument();
+ * Fix: createDoc() now accepts an optional `content` parameter and sends it
+ * to the backend. Previously it only ever sent `title`, which meant the
+ * "Duplicate" action in MyDocumentsPage.jsx silently created an EMPTY copy
+ * instead of a real duplicate — the title had "(copy)" appended, but the
+ * actual document body was blank.
  */
 
 import { useState, useEffect, useCallback } from "react";
@@ -33,9 +33,11 @@ export function useDocument() {
   }, [setDocuments, setLoading]);
 
   // ── Create a new document ─────────────────────────────────────────────────
-  const createDoc = useCallback(async (title = "Untitled Document") => {
+  // `content` is optional — pass it when duplicating an existing document
+  // or creating from a template. Defaults to an empty string for a blank doc.
+  const createDoc = useCallback(async (title = "Untitled Document", content = "") => {
     try {
-      const { data } = await api.post("/documents", { title });
+      const { data } = await api.post("/documents", { title, content });
       addDocument(data);
       return data;
     } catch (err) {
@@ -54,7 +56,7 @@ export function useDocument() {
     }
   }, []);
 
-  // ── Archive / restore a document ──────────────────────────────────────────
+  // ── Archive / restore / trash a document ──────────────────────────────────
   const updateStatus = useCallback(async (docId, status) => {
     try {
       const { data } = await api.patch(`/documents/${docId}`, { status });
@@ -64,7 +66,7 @@ export function useDocument() {
     }
   }, []);
 
-  // ── Delete a document ─────────────────────────────────────────────────────
+  // ── Delete a document (permanent) ─────────────────────────────────────────
   const deleteDoc = useCallback(async (docId) => {
     try {
       await api.delete(`/documents/${docId}`);

@@ -400,7 +400,11 @@ export default function MyDocumentsPage() {
 
     const handleDuplicate = useCallback(async (doc) => {
         try {
-            const newDoc = await createDoc(`${doc.title ?? "Untitled"} (copy)`);
+            // Fetch the full document first — the row's `doc` object from the list
+            // view doesn't include `content` (list queries don't populate it for
+            // performance), so we need the complete document before duplicating.
+            const { data: fullDoc } = await api.get(`/documents/${docPk(doc)}`);
+            const newDoc = await createDoc(`${doc.title ?? "Untitled"} (copy)`, fullDoc.content ?? "");
             if (newDoc) {
                 setDocuments((prev) => [newDoc, ...prev]);
                 toast.success("Document duplicated");

@@ -9,12 +9,16 @@ const Operation = require("../models/Operation");
 const Document = require("../models/Document");
 const otService = require("../services/otService");
 const redisService = require("../services/redisService");
+const documentService = require("../services/documentService");
 
 // ── GET /api/documents/:id/history ───────────────────────────────────────────
 exports.getHistory = async (req, res, next) => {
   try {
     const { id: docId } = req.params;
     const { limit = 20, before } = req.query; // `before` = revision cursor for pagination
+
+    // The op log embeds the literal text of every edit — owner/collaborator only.
+    await documentService.assertAccess(docId, req.user.id);
 
     const query = { docId };
     if (before) query.revision = { $lt: Number(before) };
@@ -51,8 +55,17 @@ exports.restore = async (req, res, next) => {
   try {
     const { id: docId, revId } = req.params;
 
+    await documentService.assertAccess(docId, req.user.id);
+
     const targetOp = await Operation.findById(revId).lean();
     if (!targetOp) return res.status(404).json({ message: "Version not found" });
+
+    // The revision must belong to the document named in the path — otherwise a
+    // caller could pass a revId from a document they *can* access and use its
+    // revision number against a different document.
+    if (targetOp.docId?.toString() !== docId) {
+      return res.status(400).json({ message: "Version does not belong to this document" });
+    }
 
     // Find nearest snapshot before the target revision
     const doc = await Document.findById(docId).lean();

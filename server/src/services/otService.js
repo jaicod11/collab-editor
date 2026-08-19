@@ -40,20 +40,25 @@ module.exports = {
   /**
    * Validate that an op has the required shape before processing.
    * Prevents malformed client data from corrupting the document.
+   *
+   * `pos` and `len` are checked with Number.isInteger rather than
+   * `typeof === "number"`: applyOp feeds them straight into String.slice,
+   * which silently accepts fractional, NaN and Infinity indices and would
+   * corrupt the document rather than reject the op.
    */
   validateOp(op) {
-    if (!op || typeof op !== "object") return false;
+    if (!op || typeof op !== "object" || Array.isArray(op)) return false;
     if (op.type === "insert") {
       return (
-        typeof op.pos  === "number" && op.pos  >= 0 &&
+        Number.isInteger(op.pos) && op.pos >= 0 &&
         typeof op.text === "string" && op.text.length > 0 &&
         op.text.length <= 10_000   // max single insert
       );
     }
     if (op.type === "delete") {
       return (
-        typeof op.pos === "number" && op.pos >= 0 &&
-        typeof op.len === "number" && op.len  > 0 &&
+        Number.isInteger(op.pos) && op.pos >= 0 &&
+        Number.isInteger(op.len) && op.len  > 0 &&
         op.len <= 100_000
       );
     }
