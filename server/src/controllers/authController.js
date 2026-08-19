@@ -19,7 +19,14 @@ const JWT_EXPIRES = process.env.JWT_EXPIRES ?? "7d";
 
 function signToken(user) {
   return jwt.sign(
-    { id: user._id.toString(), name: user.name, email: user.email },
+    {
+      id: user._id.toString(),
+      name: user.name,
+      email: user.email,
+      // Stamped into the token so it can be revoked later by bumping the
+      // stored counter — see models/User.js and services/sessionService.js.
+      tokenVersion: user.tokenVersion ?? 0,
+    },
     JWT_SECRET,
     { expiresIn: JWT_EXPIRES }
   );
@@ -45,7 +52,12 @@ exports.register = async (req, res, next) => {
     const user = await User.create({ name, email, password });
     const token = signToken(user);
 
-    await redisService.setSession(user._id.toString(), { id: user._id, name, email });
+    // tokenVersion must be stored alongside the session: the cached record is
+    // keyed by user, so it is what tells the fast path which generation of
+    // tokens this record vouches for. See services/sessionService.js.
+    await redisService.setSession(user._id.toString(), {
+      id: user._id, name, email, tokenVersion: user.tokenVersion ?? 0,
+    });
 
     res.status(201).json({
       token,
@@ -78,6 +90,7 @@ exports.login = async (req, res, next) => {
     const token = signToken(user);
     await redisService.setSession(user._id.toString(), {
       id: user._id, name: user.name, email: user.email,
+      tokenVersion: user.tokenVersion ?? 0,
     });
 
     res.json({
@@ -160,9 +173,22 @@ exports.changePassword = async (req, res, next) => {
     if (!valid) return res.status(401).json({ message: "Current password is incorrect" });
 
     user.password = newPassword; // pre-save hook re-hashes it automatically
+    // A password change must invalidate every token issued before it. The bump
+    // rides along on the same save, so this costs no extra round trip.
+    user.tokenVersion = (user.tokenVersion ?? 0) + 1;
     await user.save();
 
-    res.json({ message: "Password updated successfully" });
+    // Order matters: bump first, THEN drop the cached session. The reverse
+    // leaves a window where the DB check still passes and the cache is
+    // re-warmed, resurrecting the tokens we just revoked.
+    await redisService.deleteSession(req.user.id);
+
+    // Every previously-issued token is now stale, including the caller's, so
+    // hand back a freshly-signed one carrying the new tokenVersion. A client
+    // that stores this stays signed in; one that ignores it is signed out.
+    const token = signToken(user);
+
+    res.json({ message: "Password updated successfully", token });
   } catch (err) {
     next(err);
   }
@@ -174,6 +200,10 @@ exports.changePassword = async (req, res, next) => {
 // if you want a true "scorched earth" delete.
 exports.deleteAccount = async (req, res, next) => {
   try {
+    // Bump before deleting so revocation still holds if this is ever changed
+    // to a soft delete. With a hard delete the "user no longer exists" branch
+    // in sessionService is what actually rejects the token.
+    await User.findByIdAndUpdate(req.user.id, { $inc: { tokenVersion: 1 } });
     await User.findByIdAndDelete(req.user.id);
     await redisService.deleteSession(req.user.id);
     res.json({ message: "Account deleted" });
@@ -185,6 +215,10 @@ exports.deleteAccount = async (req, res, next) => {
 // ── POST /api/auth/logout ─────────────────────────────────────────────────────
 exports.logout = async (req, res, next) => {
   try {
+    // Bump first, THEN drop the cached session — the reverse order leaves a
+    // window where the DB check still passes and the cache is re-warmed,
+    // resurrecting the token we are trying to revoke.
+    await User.findByIdAndUpdate(req.user.id, { $inc: { tokenVersion: 1 } });
     await redisService.deleteSession(req.user.id);
     res.json({ message: "Logged out" });
   } catch (err) {

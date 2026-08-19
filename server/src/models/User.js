@@ -12,6 +12,12 @@ const userSchema = new mongoose.Schema(
     password: { type: String, required: true, select: false },
     avatar: { type: String, default: "" },
     bio: { type: String, default: "", maxlength: 280 }, // ← new
+
+    // Monotonic counter used to revoke previously-issued JWTs. Every token
+    // carries the value that was current when it was signed; bumping this
+    // invalidates every token issued before the bump. This is the durable
+    // source of truth for revocation — the Redis session is only a cache.
+    tokenVersion: { type: Number, default: 0 },
   },
   { timestamps: true }
 );

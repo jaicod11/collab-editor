@@ -10,7 +10,7 @@
 
 const jwt              = require("jsonwebtoken");
 const { redisSub, redisClient } = require("../config/redis");
-const redisService     = require("../services/redisService");
+const sessionService   = require("../services/sessionService");
 const documentHandler  = require("./handlers/documentHandler");
 const presenceHandler  = require("./handlers/presenceHandler");
 
@@ -31,18 +31,19 @@ module.exports = function initSocket(io) {
       return next(new Error("Invalid token"));
     }
 
-    // ── 2. Confirm the session record still exists ────────────────────────
-    // Mirrors authMiddleware.protect — without this a token revoked by logout
-    // or account deletion could still open a socket and edit documents.
-    let session;
-    try {
-      session = await redisService.getSession(payload.id);
-    } catch (err) {
-      console.error("[Socket] Session store unavailable:", err.message);
+    // ── 2. Confirm the session is still live ──────────────────────────────
+    // Shares one implementation with authMiddleware.protect so the two cannot
+    // drift: Redis fast path, MongoDB tokenVersion as the source of truth.
+    const { status, error } = await sessionService.resolveSession(payload);
+
+    if (status === sessionService.SESSION_UNAVAILABLE) {
+      console.error("[Socket] Session store unavailable:", error?.message);
       return next(new Error("Auth service temporarily unavailable"));
     }
 
-    if (!session) return next(new Error("Session expired or revoked"));
+    if (status !== sessionService.SESSION_OK) {
+      return next(new Error("Session expired or revoked"));
+    }
 
     socket.user = { id: payload.id, name: payload.name, email: payload.email };
     next();
