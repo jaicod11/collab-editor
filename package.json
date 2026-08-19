@@ -1,4 +1,10 @@
 {
+  "name": "collab-editor",
+  "private": true,
+  "description": "Real-time collaborative document editor — monorepo root",
+  "scripts": {
+    "test": "npm --prefix shared test"
+  },
   "dependencies": {
     "redis": "^5.12.1"
   }

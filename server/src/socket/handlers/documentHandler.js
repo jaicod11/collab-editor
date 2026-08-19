@@ -188,7 +188,24 @@ module.exports = function documentHandler(io, socket, redisClient, CHANNEL_PREFI
       }
 
       // ── 4. Transform op against missed ops ───────────────────────────
+      // `op.site` rides along and is preserved by every transform — it is the
+      // deterministic insert/insert tie-break, so it must survive into the op
+      // log for later catch-up transforms to agree with the live clients.
       const transformedOp = otService.transformAgainst(op, missedOps);
+
+      // Concurrent edits can cancel this op out entirely (e.g. the characters
+      // it deleted were already deleted by someone else). There is nothing to
+      // apply, persist or broadcast — but the client is still waiting, so ack
+      // at the unchanged revision to clear its pending state. Previously this
+      // was a {type:"delete", len:0} sentinel that got written to the op log
+      // and rendered as "Deleted 0 characters" in version history.
+      if (otService.isNoop(transformedOp)) {
+        await redisClient.del(lockKey);
+        return socket.emit("op:ack", {
+          revision: serverRevision,
+          op: { type: "noop" },
+        });
+      }
 
       // ── 5. Apply to document content ──────────────────────────────────
       const newContent = otService.applyOp(doc.content ?? "", transformedOp);
@@ -200,6 +217,7 @@ module.exports = function documentHandler(io, socket, redisClient, CHANNEL_PREFI
         userId: user.id,
         revision: newRevision,
         op: transformedOp,
+        site: typeof transformedOp.site === "string" ? transformedOp.site : undefined,
       });
       opRecord.save().catch((e) => console.error("[Op persist]", e));
 

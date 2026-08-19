@@ -12,12 +12,39 @@
  */
 
 import { useEffect, useRef, useCallback, useState } from "react";
-import { applyOp, transform } from "../lib/ot/operations";
+import { applyOp, isNoop } from "../lib/ot/operations";
+import {
+  createSyncState, applyLocal, receiveAck, receiveRemote,
+} from "@shared/ot/client-sync.js";
+
+/**
+ * Per-tab site id — the deterministic tie-break for two inserts at the same
+ * position. It is NOT the userId: one person with two tabs open is two
+ * genuinely concurrent replicas, and a shared userId would tie forever,
+ * leaving the order dependent on argument order again.
+ *
+ * sessionStorage is per-tab and survives a reload, which is exactly the
+ * lifetime we want.
+ */
+const SITE_ID = (() => {
+  const KEY = "collab-ot-site-id";
+  try {
+    let id = window.sessionStorage.getItem(KEY);
+    if (!id) {
+      id = window.crypto?.randomUUID?.() ?? `s-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      window.sessionStorage.setItem(KEY, id);
+    }
+    return id;
+  } catch {
+    return `s-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+})();
 
 export function useOT({ socket, docId, editorRef }) {
   const revisionRef = useRef(0);
-  const pendingRef = useRef(null);
-  const bufferRef = useRef([]);
+  // Pending/buffer bookkeeping lives in shared/ot/client-sync.js so it is
+  // testable without React and cannot drift from what the tests exercise.
+  const syncRef = useRef(createSyncState());
   const prevContentRef = useRef("");
   const isApplyingRemote = useRef(false); // mutex — blocks handleEditorInput
 
@@ -90,23 +117,22 @@ export function useOT({ socket, docId, editorRef }) {
     return null;
   }, []);
 
-  // ── Send a local op to the server ─────────────────────────────────────────
-  const submitOp = useCallback((op) => {
-    if (!socket?.connected) return;
-
-    if (pendingRef.current) {
-      // Already waiting for ack — buffer locally
-      bufferRef.current.push(op);
-      return;
-    }
-
-    pendingRef.current = op;
+  // ── Wire a single op to the server and mark it outstanding ────────────────
+  const sendOp = useCallback((op) => {
+    if (!socket?.connected || isNoop(op)) return;
     socket.emit("op:submit", {
       docId,
-      op: { ...op, revision: revisionRef.current },
+      op,                        // `site` rides along inside the op
       revision: revisionRef.current,
     });
   }, [socket, docId]);
+
+  // ── Send a local op, or buffer it while one is outstanding ────────────────
+  const submitOp = useCallback((op) => {
+    if (!socket?.connected || isNoop(op)) return;
+    const { send } = applyLocal(syncRef.current, op);
+    if (send) sendOp(send);
+  }, [socket, sendOp]);
 
   // ── Handle user keystrokes ────────────────────────────────────────────────
   const handleEditorInput = useCallback(() => {
@@ -123,7 +149,7 @@ export function useOT({ socket, docId, editorRef }) {
     const op = diffToOp(oldText, newText);
     if (!op) return;
 
-    const ops = Array.isArray(op) ? op : [op];
+    const ops = (Array.isArray(op) ? op : [op]).map((o) => ({ ...o, site: SITE_ID }));
     ops.forEach(submitOp);
   }, [readText, diffToOp, submitOp]);
 
@@ -131,37 +157,22 @@ export function useOT({ socket, docId, editorRef }) {
   useEffect(() => {
     if (!socket) return;
 
-    // Server acked our op
-    const onAck = ({ revision: rev, op }) => {
+    // Server acked our outstanding op
+    const onAck = ({ revision: rev }) => {
       revisionRef.current = rev;
       setRevision(rev);
-      pendingRef.current = null;
-
-      // Flush buffer, transforming each against the acked op
-      const flushed = [...bufferRef.current];
-      bufferRef.current = [];
-      flushed.forEach((buffered) => {
-        const [transformed] = transform(buffered, op);
-        submitOp(transformed);
-      });
+      const { send } = receiveAck(syncRef.current);
+      if (send) sendOp(send);
     };
 
     // Remote op from another user
     const onBroadcast = ({ op, revision: rev }) => {
       revisionRef.current = rev;
       setRevision(rev);
-
-      if (pendingRef.current) {
-        const [transformedPending, transformedRemote] = transform(pendingRef.current, op);
-        pendingRef.current = transformedPending;
-        bufferRef.current = bufferRef.current.map((buf) => {
-          const [t] = transform(buf, transformedRemote);
-          return t;
-        });
-        applyToEditor(transformedRemote);
-      } else {
-        applyToEditor(op);
-      }
+      // Rebases the outstanding op and the buffer, and returns the remote op
+      // expressed against the document the editor actually shows.
+      const { apply } = receiveRemote(syncRef.current, op);
+      applyToEditor(apply);
     };
 
     // Initial document load
@@ -188,7 +199,7 @@ export function useOT({ socket, docId, editorRef }) {
       socket.off("op:broadcast", onBroadcast);
       socket.off("doc:load", onDocLoad);
     };
-  }, [socket, applyToEditor, submitOp, editorRef]);
+  }, [socket, applyToEditor, sendOp, editorRef]);
 
   return { submitOp, handleEditorInput, content, revision };
 }

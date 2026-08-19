@@ -41,10 +41,22 @@ const operationSchema = new mongoose.Schema(
             required: true,
         },
         op: {
-            // { type: "insert", pos: number, text: string }
-            // { type: "delete", pos: number, len:  number }
+            // { type: "insert", pos: number, text: string, site: string }
+            // { type: "delete", pos: number, len:  number, site: string }
+            // { type: "batch",  ops: [ ...primitives ] }
+            // A transform can split one delete into two disjoint ranges when a
+            // concurrent insert lands inside it; that is stored as a "batch".
+            // "noop" results are never persisted — they are acked and dropped.
             type: mongoose.Schema.Types.Mixed,
             required: true,
+        },
+
+        // Denormalised copy of op.site — the deterministic insert/insert
+        // tie-break. It also lives inside `op` (which is what the transform
+        // reads); this column exists so the ordering can be inspected and
+        // queried without digging into a Mixed field.
+        site: {
+            type: String,
         },
         appliedAt: {
             type: Date,

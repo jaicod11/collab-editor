@@ -1,6 +1,20 @@
 {
   "name": "collab-editor-shared",
   "version": "1.0.0",
-  "description": "Shared OT logic used by both client and server",
-  "main": "ot/operations.js"
+  "description": "Shared OT logic used by both client and server — single source of truth",
+  "type": "module",
+  "main": "ot/operations.js",
+  "exports": {
+    "./ot/operations.js": "./ot/operations.js",
+    "./ot/operations": "./ot/operations.js",
+    "./ot/client-sync.js": "./ot/client-sync.js",
+    "./ot/client-sync": "./ot/client-sync.js",
+    "./ot/transform.js": "./ot/transform.js"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
 }

@@ -109,12 +109,30 @@ exports.restore = async (req, res, next) => {
 // ─── Helper ────────────────────────────────────────────────────────────────────
 function describeOp(op) {
   if (!op) return "Unknown change";
+
   if (op.type === "insert") {
     const preview = op.text?.slice(0, 40) ?? "";
     return `Inserted "${preview}${op.text?.length > 40 ? "…" : ""}"`;
   }
+
   if (op.type === "delete") {
+    // Zero-length deletes are no longer produced by the transform, and are
+    // never persisted, but guard anyway so a legacy row cannot render as
+    // "Deleted 0 characters".
+    if (!(op.len > 0)) return "No change";
     return `Deleted ${op.len} character${op.len === 1 ? "" : "s"}`;
   }
+
+  if (op.type === "batch") {
+    // A delete split around a concurrent insert.
+    const total = (op.ops ?? [])
+      .filter((o) => o?.type === "delete" && o.len > 0)
+      .reduce((sum, o) => sum + o.len, 0);
+    if (total > 0) return `Deleted ${total} character${total === 1 ? "" : "s"}`;
+    return "Document modified";
+  }
+
+  if (op.type === "noop") return "No change";
+
   return "Document modified";
 }

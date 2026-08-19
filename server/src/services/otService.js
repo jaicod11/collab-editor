@@ -8,8 +8,12 @@
  * so the transform logic is identical on both ends.
  */
 
-const { applyOp, applyOps, transform, transformAgainst, compose } =
-  require("../../../shared/ot/operations");
+// NOTE: shared/ot is an ESM package. Node supports require() of ESM from
+// v22.12 (see server/package.json engines). There is exactly one copy of this
+// algorithm — do not re-implement it here or on the client.
+const {
+  applyOp, applyOps, transform, transformAgainst, compose, isNoop, normalize,
+} = require("../../../shared/ot/operations.js");
 
 module.exports = {
   /**
@@ -38,6 +42,16 @@ module.exports = {
   compose,
 
   /**
+   * True when a (possibly transformed) op has no effect on the document.
+   */
+  isNoop,
+
+  /**
+   * Collapse a list of primitive ops into a single op value.
+   */
+  normalize,
+
+  /**
    * Validate that an op has the required shape before processing.
    * Prevents malformed client data from corrupting the document.
    *
@@ -48,6 +62,17 @@ module.exports = {
    */
   validateOp(op) {
     if (!op || typeof op !== "object" || Array.isArray(op)) return false;
+
+    // `site` is the insert/insert tie-break. Optional for backward
+    // compatibility (ops predating it sort deterministically as ""), but when
+    // present it must be a bounded string — it is persisted and compared on
+    // every transform.
+    if (op.site !== undefined) {
+      if (typeof op.site !== "string" || op.site.length === 0 || op.site.length > 64) {
+        return false;
+      }
+    }
+
     if (op.type === "insert") {
       return (
         Number.isInteger(op.pos) && op.pos >= 0 &&
