@@ -5,16 +5,7 @@ import { useAuthStore } from "../store/authSlice";
 import Sidebar, { T, Icons } from "../components/Layout/Sidebar";
 import api from "../services/api";
 
-// ─── Category colors (unified with all other pages) ───────────────────────────
-const CAT = {
-    General: { bg: "rgba(122,122,122,.12)", text: "#7a7a7a", icon: "#7a7a7a" },
-    Product: { bg: "rgba(61,220,110,.13)", text: "#3ddc6e", icon: "#3ddc6e" },
-    Design: { bg: "rgba(224,92,42,.13)", text: "#e05c2a", icon: "#e05c2a" },
-    Engineering: { bg: "rgba(42,122,224,.13)", text: "#2a7ae0", icon: "#2a7ae0" },
-    Research: { bg: "rgba(200,168,0,.13)", text: "#c8a800", icon: "#c8a800" },
-    Finance: { bg: "rgba(139,42,224,.13)", text: "#8b2ae0", icon: "#8b2ae0" },
-    Marketing: { bg: "rgba(224,42,106,.13)", text: "#e02a6a", icon: "#e02a6a" },
-};
+const ICON_TINT = { bg: "rgba(122,122,122,.12)", icon: "#7a7a7a" };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function docPk(d) { return d?._id ?? d?.id ?? ""; }
@@ -31,33 +22,7 @@ function fmtDate(d) {
     return dt.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
 }
 
-function inferCategory(t = "") {
-    const s = t.toLowerCase();
-    if (s.includes("design") || s.includes("brand") || s.includes("onboard") || s.includes("ui")) return "Design";
-    if (s.includes("engineer") || s.includes("api") || s.includes("code") || s.includes("sprint")) return "Engineering";
-    if (s.includes("research") || s.includes("survey") || s.includes("interview")) return "Research";
-    if (s.includes("market") || s.includes("copy") || s.includes("campaign")) return "Marketing";
-    if (s.includes("finance") || s.includes("investor") || s.includes("deck") || s.includes("budget")) return "Finance";
-    if (s.includes("product") || s.includes("roadmap") || s.includes("okr")) return "Product";
-    return "General";
-}
 
-// ─── localStorage starred state ───────────────────────────────────────────────
-const STARRED_KEY = "collab-starred";
-
-function getStarred() {
-    try { return new Set(JSON.parse(localStorage.getItem(STARRED_KEY) ?? "[]")); }
-    catch { return new Set(); }
-}
-function setStarredStorage(ids) {
-    localStorage.setItem(STARRED_KEY, JSON.stringify([...ids]));
-}
-function toggleStarred(id) {
-    const set = getStarred();
-    if (set.has(id)) set.delete(id); else set.add(id);
-    setStarredStorage(set);
-    return set;
-}
 
 // ─── Card icons (rotate per index, colored per category) ─────────────────────
 const CARD_ICONS = [
@@ -83,8 +48,7 @@ function StarredCard({ doc, index, onOpen, onUnstar }) {
     const [hov, setHov] = useState(false);
     const [starHov, setStarHov] = useState(false);
 
-    const cat = inferCategory(doc.title ?? "");
-    const catColor = CAT[cat] ?? CAT.General;
+    const catColor = ICON_TINT;
 
     return (
         <div
@@ -139,13 +103,6 @@ function StarredCard({ doc, index, onOpen, onUnstar }) {
                     {doc.title ?? "Untitled Document"}
                 </h3>
 
-                {/* Category tag */}
-                <span style={{
-                    fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 4,
-                    background: catColor.bg, color: catColor.text, display: "inline-block",
-                }}>
-                    {cat}
-                </span>
             </div>
 
             {/* Card footer */}
@@ -223,54 +180,54 @@ function ProfileDropdown({ user, open, onClose, onLogout, navigate }) {
 export default function StarredPage() {
     const navigate = useNavigate();
     const { toast } = useToast();
+
+    // The toast helper is rebuilt on every ToastProvider render, so it is held
+    // in a ref rather than declared as an effect dependency — otherwise showing
+    // any toast anywhere would re-run this fetch.
+    const toastRef = useRef(toast);
+    toastRef.current = toast;
     const user = useAuthStore((s) => s.user);
     const logout = useAuthStore((s) => s.logout);
 
-    const [allDocs, setAllDocs] = useState([]);
-    const [starredIds, setStarredIds] = useState(getStarred);
+    const [starredDocs, setStarredDocs] = useState([]);
     const [loading, setLoading] = useState(false);
     const [search, setSearch] = useState("");
     const [profileOpen, setProfileOpen] = useState(false);
 
-    // Load all docs, filter to starred on client
+    // Fetched by the SERVER with filter=starred. This used to request every
+    // document and intersect against localStorage, so a starred document
+    // outside the first 100 results simply vanished from its own page.
     useEffect(() => {
         setLoading(true);
-        api.get("/documents", { params: { filter: "all" } })
-            .then(({ data }) => {
-                if (Array.isArray(data?.documents)) setAllDocs(data.documents);
-            })
-            .catch(() => { })
+        api.get("/documents", { params: { filter: "starred" } })
+            .then(({ data }) => setStarredDocs(Array.isArray(data?.documents) ? data.documents : []))
+            .catch(() => toastRef.current.error("Could not load your starred documents"))
             .finally(() => setLoading(false));
+    }, [toast]);
 
-        // Pre-star all docs on first visit if nothing starred yet (demo UX)
-        // Remove this block once backend starred field exists
-        const existing = getStarred();
-        if (existing.size === 0) {
-            // Page will show empty state — user can star from other pages
-        }
-    }, []);
-
-    // Starred documents = those whose IDs are in starredIds
-    const starredDocs = useMemo(() => {
-        const docs = allDocs.filter((d) => starredIds.has(docPk(d)));
-        if (!search.trim()) return docs;
+    const filteredDocs = useMemo(() => {
+        if (!search.trim()) return starredDocs;
         const q = search.toLowerCase();
-        return docs.filter((d) => (d.title ?? "").toLowerCase().includes(q));
-    }, [allDocs, starredIds, search]);
+        return starredDocs.filter((d) => (d.title ?? "").toLowerCase().includes(q));
+    }, [starredDocs, search]);
 
     const handleOpen = useCallback((doc) => navigate(`/editor/${docPk(doc)}`), [navigate]);
 
-    const handleUnstar = useCallback((doc) => {
-        const newSet = toggleStarred(docPk(doc));
-        setStarredIds(new Set(newSet));
-        toast.success(`"${doc.title ?? "Document"}" removed from starred`);
+    const handleUnstar = useCallback(async (doc) => {
+        const id = docPk(doc);
+        try {
+            await api.delete(`/documents/${id}/star`);
+            setStarredDocs((prev) => prev.filter((d) => docPk(d) !== id));
+            toast.success(`"${doc.title ?? "Document"}" removed from starred`);
+        } catch {
+            toast.error("Could not remove the star");
+        }
     }, [toast]);
 
-    const handleNewDoc = useCallback(() => navigate("/new"), [navigate]);
 
     return (
         <div style={{ display: "flex", minHeight: "100vh", background: T.bg, fontFamily: T.font, color: T.fg }}>
-            <Sidebar activeTab="starred" onNewDoc={handleNewDoc} />
+            <Sidebar activeTab="starred" />
 
             <main style={{ flex: 1, padding: "40px 48px", overflowY: "auto" }}>
 
@@ -293,14 +250,8 @@ export default function StarredPage() {
                         {/* Search */}
                         <div style={{ display: "flex", alignItems: "center", gap: 8, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 6, padding: "8px 12px", width: 220 }}>
                             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={T.mutedFg} strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round"><path d="m21 21-4.34-4.34" /><circle cx="11" cy="11" r="8" /></svg>
-                            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search starred..."
+                            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search starred by title…"
                                 style={{ background: "none", border: "none", outline: "none", color: T.fg, fontSize: 13, fontFamily: T.font, width: "100%" }} />
-                        </div>
-
-                        {/* Bell */}
-                        <div style={{ width: 36, height: 36, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", color: T.mutedFg, position: "relative", cursor: "pointer" }}>
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M10.268 21a2 2 0 0 0 3.464 0m-10.47-5.674A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326" /></svg>
-                            <div style={{ position: "absolute", top: 8, right: 8, width: 6, height: 6, background: T.primary, borderRadius: "50%" }} />
                         </div>
 
                         {/* Profile avatar */}
@@ -322,7 +273,7 @@ export default function StarredPage() {
                             <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" style={{ opacity: .75 }} />
                         </svg>
                     </div>
-                ) : starredDocs.length === 0 ? (
+                ) : filteredDocs.length === 0 ? (
                     /* Empty state */
                     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "100px 24px", textAlign: "center" }}>
                         <div style={{ width: 56, height: 56, borderRadius: "50%", background: T.muted, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 20 }}>
@@ -346,7 +297,7 @@ export default function StarredPage() {
                     </div>
                 ) : (
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 20 }}>
-                        {starredDocs.map((doc, i) => (
+                        {filteredDocs.map((doc, i) => (
                             <StarredCard
                                 key={docPk(doc)}
                                 doc={doc}

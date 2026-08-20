@@ -1,6 +1,6 @@
 /**
  * pages/DocumentDashboard.jsx — Home page
- * Uses shared Sidebar component. Shows greeting, pinned docs, recent docs.
+ * Uses shared Sidebar component. Shows greeting and recent documents.
  */
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
@@ -32,23 +32,6 @@ function fmtDate(d) {
 function docPk(doc) { return doc?._id ?? doc?.id ?? ""; }
 function ownerName(o) { if (!o) return "Unknown"; return typeof o === "object" ? (o.name ?? o.email ?? "Unknown") : String(o); }
 function userInitials(n) { if (!n) return "?"; return n.split(" ").map(x => x[0]).join("").toUpperCase().slice(0, 2); }
-function inferCategory(t = "") {
-  const s = t.toLowerCase();
-  if (s.includes("design") || s.includes("brand") || s.includes("ui") || s.includes("onboard")) return "Design";
-  if (s.includes("engineer") || s.includes("api") || s.includes("code") || s.includes("sprint")) return "Engineering";
-  if (s.includes("research") || s.includes("survey") || s.includes("user")) return "Research";
-  if (s.includes("market") || s.includes("copy") || s.includes("campaign")) return "Marketing";
-  if (s.includes("finance") || s.includes("investor") || s.includes("budget")) return "Finance";
-  return "Product";
-}
-const TAG_COLORS = {
-  Product: "#1a2e22", Design: "#1a2e22",
-  Engineering: "#1c1c1c", Research: "#1c1c1c", Finance: "#1c1c1c", Marketing: "#1c1c1c",
-};
-const TAG_TEXT = {
-  Product: T.primary, Design: T.primary,
-  Engineering: T.mutedFg, Research: T.mutedFg, Finance: T.mutedFg, Marketing: T.mutedFg,
-};
 
 const DOC_ICONS = ["map", "file-text", "target", "code", "clipboard-list", "file"];
 const DocIconSvg = ({ name }) => {
@@ -120,11 +103,7 @@ function TopBar({ user, search, onSearch, onLogout, navigate }) {
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 6, padding: "8px 12px", width: 220, color: T.mutedFg, fontSize: 13 }}>
           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round"><path d="m21 21-4.34-4.34" /><circle cx="11" cy="11" r="8" /></svg>
-          <input value={search} onChange={(e) => onSearch(e.target.value)} placeholder="Search documents..." style={{ background: "none", border: "none", outline: "none", color: T.fg, fontSize: 13, fontFamily: T.font, width: "100%" }} />
-        </div>
-        <div style={{ width: 36, height: 36, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", color: T.mutedFg, position: "relative", cursor: "pointer" }}>
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M10.268 21a2 2 0 0 0 3.464 0m-10.47-5.674A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326" /></svg>
-          <div style={{ position: "absolute", top: 8, right: 8, width: 6, height: 6, background: T.primary, borderRadius: "50%" }} />
+          <input value={search} onChange={(e) => onSearch(e.target.value)} placeholder="Search by title…" style={{ background: "none", border: "none", outline: "none", color: T.fg, fontSize: 13, fontFamily: T.font, width: "100%" }} />
         </div>
         <div style={{ position: "relative" }}>
           <button onClick={() => setProfileOpen(o => !o)}
@@ -141,7 +120,6 @@ function TopBar({ user, search, onSearch, onLogout, navigate }) {
 // ─── Document card ────────────────────────────────────────────────────────────
 function DocCard({ doc, index, onClick }) {
   const [hov, setHov] = useState(false);
-  const cat = inferCategory(doc.title);
   return (
     <button onClick={() => onClick(doc)}
       onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}
@@ -156,7 +134,6 @@ function DocCard({ doc, index, onClick }) {
             <p style={{ fontSize: 11, color: T.mutedFg }}>{fmtDate(doc.updatedAt ?? doc.createdAt)}</p>
           </div>
         </div>
-        <div style={{ fontSize: 11, fontWeight: 500, padding: "2px 8px", borderRadius: 4, background: TAG_COLORS[cat], color: TAG_TEXT[cat], flexShrink: 0 }}>{cat}</div>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 8, paddingTop: 12, borderTop: `1px solid ${T.border}` }}>
         <div style={{ width: 20, height: 20, borderRadius: "50%", background: `linear-gradient(135deg,${T.primary},#16a34a)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 8, fontWeight: 700, color: T.primFg, flexShrink: 0 }}>
@@ -172,15 +149,27 @@ function DocCard({ doc, index, onClick }) {
 export default function DocumentDashboard() {
   const navigate = useNavigate();
   const { toast } = useToast();
+
+    // The toast helper is rebuilt on every ToastProvider render, so it is held
+    // in a ref rather than declared as an effect dependency — otherwise showing
+    // any toast anywhere would re-run this fetch.
+    const toastRef = useRef(toast);
+    toastRef.current = toast;
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
   const { loading, loadDocuments, createDoc } = useDocument();
   const [documents, setDocuments] = useState([]);
   const [search, setSearch] = useState("");
 
+  // loadDocuments is useCallback'd over zustand store actions, which keep a
+  // stable identity, so declaring the dependency does not make this re-run.
   useEffect(() => {
-    loadDocuments().then((data) => { if (Array.isArray(data?.documents)) setDocuments(data.documents); }).catch(() => { });
-  }, []);
+    loadDocuments()
+      .then((data) => { if (Array.isArray(data?.documents)) setDocuments(data.documents); })
+      // A failed load used to render as "No documents yet", which is a
+      // different statement from "we could not reach the server".
+      .catch(() => toastRef.current.error("Could not load your documents"));
+  }, [loadDocuments]);
 
   const filtered = useMemo(() => {
     if (!search.trim()) return documents;
@@ -188,8 +177,10 @@ export default function DocumentDashboard() {
     return documents.filter((d) => (d.title ?? "").toLowerCase().includes(q));
   }, [documents, search]);
 
-  const pinned = filtered.slice(0, 3);
-  const recent = filtered.slice(3, 9);
+  // There is no pin feature — a "Pinned" heading used to sit over
+  // filtered.slice(0,3), which is simply the three most recently edited
+  // documents. Recency is what this list actually is, so it says so, once.
+  const recent = filtered.slice(0, 9);
 
   const handleOpen = useCallback((doc) => navigate(`/editor/${docPk(doc)}`), [navigate]);
   const handleNewDoc = useCallback(async () => {
@@ -200,20 +191,9 @@ export default function DocumentDashboard() {
 
   return (
     <div style={{ display: "flex", minHeight: "100vh", background: T.bg, fontFamily: T.font, color: T.fg }}>
-      <Sidebar activeTab="home" onNewDoc={handleNewDoc} />
+      <Sidebar activeTab="home" />
       <main style={{ flex: 1, padding: "40px 48px", overflowY: "auto" }}>
         <TopBar user={user} search={search} onSearch={setSearch} onLogout={logout} navigate={navigate} />
-
-        {pinned.length > 0 && (
-          <section style={{ marginBottom: 40 }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
-              <h2 style={{ fontSize: 16, fontWeight: 600, color: T.fg, fontFamily: T.font }}>{search ? "Results" : "Pinned"}</h2>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 16 }}>
-              {pinned.map((doc, i) => <DocCard key={docPk(doc)} doc={doc} index={i} onClick={handleOpen} />)}
-            </div>
-          </section>
-        )}
 
         <section>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
@@ -227,7 +207,7 @@ export default function DocumentDashboard() {
                 <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" style={{ opacity: .75 }} />
               </svg>
             </div>
-          ) : recent.length === 0 && pinned.length === 0 ? (
+          ) : recent.length === 0 ? (
             <div style={{ textAlign: "center", padding: "60px 0" }}>
               <p style={{ color: T.mutedFg, fontSize: 14, marginBottom: 16 }}>{search ? "No documents match." : "No documents yet."}</p>
               {!search && (
@@ -238,7 +218,7 @@ export default function DocumentDashboard() {
             </div>
           ) : (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 16 }}>
-              {recent.map((doc, i) => <DocCard key={docPk(doc)} doc={doc} index={i + 3} onClick={handleOpen} />)}
+              {recent.map((doc, i) => <DocCard key={docPk(doc)} doc={doc} index={i} onClick={handleOpen} />)}
             </div>
           )}
         </section>

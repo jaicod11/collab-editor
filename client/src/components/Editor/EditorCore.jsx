@@ -45,17 +45,23 @@ const EditorCore = forwardRef(function EditorCore(
     onContentChange,
     onCollaboratorsChange,
     onRevisionChange,
-    className = "",
+    onSaveStateChange,
+    onResync,
+    // A viewer's edits are rejected by the server anyway; making the surface
+    // genuinely uneditable means they never type into a void.
+    readOnly = false,
+    className = ""
   },
   ref
 ) {
   const editorRef = useRef(null);
 
   // ── OT engine — ONE instance only ────────────────────────────────────────
-  const { handleEditorInput, content, revision } = useOT({
+  const { handleEditorInput, seed, content, revision, loaded, saveState } = useOT({
     socket,
     docId,
     editorRef,
+    onResync,
   });
 
   // ── Presence / cursors ────────────────────────────────────────────────────
@@ -76,25 +82,41 @@ const EditorCore = forwardRef(function EditorCore(
     onRevisionChange?.(revision);
   }, [revision, onRevisionChange]);
 
+  // ── Notify parent of save state ──────────────────────────────────────────
+  // Driven by op:ack, so "Saved" means the server acknowledged every local
+  // edit — not that a timer elapsed.
+  useEffect(() => {
+    onSaveStateChange?.(saveState);
+  }, [saveState, onSaveStateChange]);
+
   // ── Notify parent of content changes (for autosave debounce) ─────────────
   useEffect(() => {
     onContentChange?.(content);
   }, [content, onContentChange]);
 
-  // ── Set initial content once on mount ────────────────────────────────────
+  // ── Optimistic first paint from the REST fetch ───────────────────────────
+  // This used to be a mount-once effect with an empty dependency array reading
+  // `initialContent`. That was harmless only because initialContent was always
+  // "" (activeDocument was never populated); now that it carries a real value
+  // arriving asynchronously, the stale closure would paint nothing.
+  //
+  // Depending on it properly is safe because seed() is idempotent and refuses
+  // to run once doc:load has arrived or the user has typed — the socket stays
+  // authoritative. It also writes through useOT, so prevContentRef tracks the
+  // DOM; writing textContent directly here left the diff baseline stale and
+  // turned the next keystroke into a whole-document replacement.
   useEffect(() => {
-    if (editorRef.current && initialContent && !editorRef.current.textContent) {
-      editorRef.current.textContent = initialContent;
-    }
-  }, []); // intentionally empty — run once only
+    seed(initialContent);
+  }, [seed, initialContent]);
 
   // ── Expose imperative API to parent ──────────────────────────────────────
   useImperativeHandle(ref, () => ({
     getContent:  () => editorRef.current?.textContent ?? "",
     getRevision: () => revision,
+    isLoaded:    () => loaded,
     focus:       () => editorRef.current?.focus(),
     getEditorEl: () => editorRef.current,
-  }));
+  }), [revision, loaded]);
 
   const handleInput = useCallback(() => {
     handleEditorInput();
@@ -112,13 +134,15 @@ const EditorCore = forwardRef(function EditorCore(
       {/* Editable surface */}
       <div
         ref={editorRef}
-        contentEditable
+        contentEditable={!readOnly}
         suppressContentEditableWarning
-        spellCheck
-        data-placeholder="Start writing…"
-        onInput={handleInput}
-        onKeyUp={handleKeyUp}
+        spellCheck={!readOnly}
+        aria-readonly={readOnly}
+        data-placeholder={readOnly ? "" : "Start writing…"}
+        onInput={readOnly ? undefined : handleInput}
+        onKeyUp={readOnly ? undefined : handleKeyUp}
         onMouseUp={handleMouseUp}
+        style={readOnly ? { cursor: "default" } : undefined}
         className={`
           min-h-[60vh] text-on-surface leading-relaxed text-lg outline-none
           focus:ring-0 whitespace-pre-wrap break-words

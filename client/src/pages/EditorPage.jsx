@@ -4,7 +4,9 @@ import { useSocket } from "../hooks/useSocket";
 import { useDocument } from "../hooks/useDocument";
 import { useToast } from "../components/UI/Toast";
 import { useAuthStore } from "../store/authSlice";
+import { useDocumentStore } from "../store/documentSlice";
 import EditorCore from "../components/Editor/EditorCore";
+import ShareModal from "../components/Editor/ShareModal";
 import api from "../services/api";
 
 const E = {
@@ -53,58 +55,36 @@ function Avatar({ name, size = 24, dot = false }) {
   );
 }
 
-function TBtn({ icon, label, onClick, children }) {
-  const [hov, setHov] = useState(false);
-  return (
-    <button title={label} onClick={onClick}
-      onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}
-      style={{ padding: "4px 5px", borderRadius: 4, border: "none", cursor: "pointer", background: hov ? "rgba(255,255,255,.07)" : "none", color: hov ? E.fg : E.mutedFg, display: "flex", alignItems: "center", justifyContent: "center", transition: "all .1s", minWidth: 26 }}>
-      {icon ? <span className="material-symbols-outlined" style={{ fontSize: 16 }}>{icon}</span>
-        : <span style={{ fontSize: 13, fontWeight: 700, fontFamily: "serif" }}>{children}</span>}
-    </button>
-  );
-}
-function TDiv() { return <div style={{ width: 1, height: 18, background: E.border, margin: "0 3px", flexShrink: 0 }} />; }
-
-function MenuItem({ label }) {
-  const [h, setH] = useState(false);
-  return (
-    <button onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)}
-      style={{ padding: "3px 7px", background: h ? "rgba(255,255,255,.07)" : "none", border: "none", color: h ? E.fg : E.mutedFg, fontSize: 12, cursor: "pointer", borderRadius: 4, fontFamily: E.font }}>
-      {label}
-    </button>
-  );
-}
-
-function VersionPanel({ docId, collaborators, currentUser, onClose }) {
+function VersionPanel({ docId, collaborators, currentUser, connected, onClose }) {
   const [history, setHistory] = useState([]);
+  const [state, setState] = useState("loading"); // loading | ready | error
 
   useEffect(() => {
     if (!docId) return;
+    setState("loading");
     api.get(`/history/${docId}`)
-      .then(({ data }) => { if (Array.isArray(data.history)) setHistory(data.history); })
-      .catch(() => { });
+      .then(({ data }) => {
+        setHistory(Array.isArray(data.history) ? data.history : []);
+        setState("ready");
+      })
+      // Failures used to be swallowed by `.catch(() => {})` and then papered
+      // over with fabricated entries, so a broken endpoint looked like a
+      // populated audit trail. Surface it instead.
+      .catch(() => setState("error"));
   }, [docId]);
 
-  const grouped = useMemo(() => {
-    if (history.length > 0) return groupByDate(history);
-    // Demo fallback
-    const now = Date.now();
-    return {
-      "Today": [{ id: "t1", author: { name: currentUser?.name ?? "You" }, description: "Created document", appliedAt: new Date() }],
-      "Yesterday": [
-        { id: "y1", author: { name: "Jordan Lee" }, description: "Added section: Goals", appliedAt: new Date(now - 90000000) },
-        { id: "y2", author: { name: "Amara Osei" }, description: "Edited introduction", appliedAt: new Date(now - 100000000) },
-        { id: "y3", author: { name: "Jordan Lee" }, description: "Renamed document", appliedAt: new Date(now - 110000000) },
-      ],
-      "MON, JUL 7": [
-        { id: "m1", author: { name: "Ravi Patel" }, description: "Inserted table", appliedAt: new Date(now - 200000000) },
-        { id: "m2", author: { name: "Amara Osei" }, description: "Added comments", appliedAt: new Date(now - 210000000) },
-      ],
-    };
-  }, [history, currentUser]);
+  const grouped = useMemo(
+    () => (history.length > 0 ? groupByDate(history) : {}),
+    [history]
+  );
 
-  const onlineAll = [{ name: currentUser?.name ?? "You" }, ...collaborators].slice(0, 4);
+  // Who is genuinely in this document right now: the collaborators presence
+  // reports, plus ourselves only while the socket is actually connected. This
+  // used to list the current user as "Editing" unconditionally, even offline.
+  const onlineNow = [
+    ...(connected ? [{ userId: currentUser?.id, name: currentUser?.name ?? "You", self: true }] : []),
+    ...collaborators,
+  ].slice(0, 5);
 
   return (
     <aside style={{ width: 280, background: E.sidebar, borderLeft: `1px solid ${E.border}`, display: "flex", flexDirection: "column", flexShrink: 0, overflowY: "auto" }}>
@@ -123,23 +103,50 @@ function VersionPanel({ docId, collaborators, currentUser, onClose }) {
         </button>
       </div>
 
-      {/* Online Now */}
+      {/* Online now */}
       <div style={{ padding: "10px 14px", borderBottom: `1px solid ${E.border}`, flexShrink: 0 }}>
-        <p style={{ fontSize: 10, fontWeight: 600, color: E.mutedFg, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>Online Now</p>
-        <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-          {onlineAll.map((c, i) => (
-            <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <Avatar name={c.name} size={24} dot />
-              <span style={{ fontSize: 12, color: E.fg, flex: 1 }}>{c.name}</span>
-              <span style={{ fontSize: 11, color: E.primary, fontWeight: 500 }}>Editing</span>
-            </div>
-          ))}
-        </div>
+        <p style={{ fontSize: 10, fontWeight: 600, color: E.mutedFg, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>Online now</p>
+        {onlineNow.length === 0 ? (
+          <p style={{ fontSize: 12, color: E.mutedFg }}>Not connected</p>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+            {onlineNow.map((c, i) => (
+              <div key={c.userId ?? i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <Avatar name={c.name} size={24} dot />
+                <span style={{ fontSize: 12, color: E.fg, flex: 1 }}>
+                  {c.name}{c.self ? " (you)" : ""}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
-      {/* Activity timeline */}
+      {/* Activity timeline — real entries only */}
       <div style={{ flex: 1, overflowY: "auto", padding: "6px 0" }}>
-        {Object.entries(grouped).map(([label, entries]) => (
+        {state === "loading" && (
+          <p style={{ fontSize: 12, color: E.mutedFg, padding: "16px 14px" }}>Loading history…</p>
+        )}
+
+        {state === "error" && (
+          <div style={{ padding: "16px 14px" }}>
+            <p style={{ fontSize: 12, color: "#ef4444", marginBottom: 4 }}>Could not load version history.</p>
+            <p style={{ fontSize: 11, color: E.mutedFg, lineHeight: 1.5 }}>
+              The edit log is unavailable right now. Nothing has been lost — try reopening this panel.
+            </p>
+          </div>
+        )}
+
+        {state === "ready" && history.length === 0 && (
+          <div style={{ padding: "16px 14px" }}>
+            <p style={{ fontSize: 12, color: E.fg, marginBottom: 4 }}>No edits yet</p>
+            <p style={{ fontSize: 11, color: E.mutedFg, lineHeight: 1.5 }}>
+              Changes to this document will appear here as they happen.
+            </p>
+          </div>
+        )}
+
+        {state === "ready" && Object.entries(grouped).map(([label, entries]) => (
           <div key={label} style={{ marginBottom: 2 }}>
             <p style={{ fontSize: 10, fontWeight: 600, color: E.mutedFg, textTransform: "uppercase", letterSpacing: "0.1em", padding: "8px 14px 3px" }}>{label}</p>
             {entries.map(entry => (
@@ -174,6 +181,11 @@ export default function EditorPage() {
   const [editingTitle, setEditingTitle] = useState(false);
   const [saveStatus, setSaveStatus] = useState("Saved");
   const [showHistory, setShowHistory] = useState(true);
+  const [showShare, setShowShare] = useState(false);
+  // The viewer's own role, reported by doc:load. Drives the read-only banner;
+  // the server enforces it independently on every write.
+  const [myRole, setMyRole] = useState(null);
+  const isViewer = myRole === "viewer";
   const [collaborators, setCollaborators] = useState([]);
   const [wordCount, setWordCount] = useState(0);
   const [charCount, setCharCount] = useState(0);
@@ -181,29 +193,102 @@ export default function EditorPage() {
   const [, setRevision] = useState(0);
 
   const editorCoreRef = useRef(null);
-  const saveTimer = useRef(null);
   const titleTimer = useRef(null);
 
   const { socket, connected } = useSocket(docId);
-  const { activeDocument, updateTitle, createDoc } = useDocument();
+  const { updateTitle, createDoc } = useDocument();
 
-  useEffect(() => { if (activeDocument?.title) setTitle(activeDocument.title); }, [activeDocument]);
+  // activeDocument lives in the store; nothing used to populate it, so this
+  // page rendered a blank editor until the socket round trip completed and
+  // never recovered if doc:load was missed.
+  const activeDocument = useDocumentStore((s) => s.activeDocument);
+  const setActiveDocument = useDocumentStore((s) => s.setActiveDocument);
+  const clearActiveDocument = useDocumentStore((s) => s.clearActiveDocument);
+  const updateActiveContent = useDocumentStore((s) => s.updateActiveContent);
+  const updateActiveTitle = useDocumentStore((s) => s.updateActiveTitle);
+
+  // The toast helper is rebuilt on every ToastProvider render, so keep it out
+  // of effect dependency lists — otherwise showing any toast anywhere tears
+  // down and re-registers this page's socket listeners.
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
+  const navigateRef = useRef(navigate);
+  navigateRef.current = navigate;
+
+  // ── Fetch the document ────────────────────────────────────────────────────
+  //
+  // AUTHORITY: this REST read supplies metadata (title, owner, status) and an
+  // immediate first paint. The socket's doc:load is authoritative for content
+  // and revision — the OT engine must be anchored to the revision the server
+  // actually joined us at, and useOT.seed() ignores this content once doc:load
+  // has landed. So the two are not racing; they own different fields.
+  useEffect(() => {
+    if (!docId) return undefined;
+    let cancelled = false;
+
+    api.get(`/documents/${docId}`)
+      .then(({ data }) => { if (!cancelled) setActiveDocument(data); })
+      .catch((err) => {
+        if (cancelled) return;
+        toastRef.current.error(
+          err.response?.status === 403 ? "You do not have access to this document"
+            : err.response?.status === 404 ? "Document not found"
+            : "Failed to load document"
+        );
+      });
+
+    return () => { cancelled = true; clearActiveDocument(); };
+  }, [docId, setActiveDocument, clearActiveDocument]);
+
+  // Title follows the store. Depending on the string rather than the object
+  // means an unrelated content update does not clobber an in-progress rename.
+  useEffect(() => {
+    if (activeDocument?.title) setTitle(activeDocument.title);
+  }, [activeDocument?.title]);
 
   useEffect(() => {
-    if (!socket) return;
-    const onLoad = ({ title: t }) => { if (t) setTitle(t); };
-    const onErr = ({ message }) => toast.error(message);
-    socket.on("doc:load", onLoad); socket.on("doc:error", onErr);
+    if (!socket) return undefined;
+    const onLoad = ({ title: t, content, revision, role }) => {
+      if (t) setTitle(t);
+      if (role) setMyRole(role);
+      // Fold the authoritative socket state back into the store so anything
+      // else reading activeDocument sees what the editor is actually showing.
+      if (t) updateActiveTitle(t);
+      updateActiveContent(content ?? "", revision ?? 0);
+    };
+    const onErr = ({ code, message }) => {
+      toastRef.current.error(message);
+      // The owner removed us or dropped us to view-only while we had the
+      // document open. The socket has already been forced out of the room.
+      if (code === "ACCESS_REVOKED") navigateRef.current("/documents", { replace: true });
+      if (code === "VIEWER_READONLY") setMyRole("viewer");
+    };
+
+    socket.on("doc:load", onLoad);
+    socket.on("doc:error", onErr);
     return () => { socket.off("doc:load", onLoad); socket.off("doc:error", onErr); };
-  }, [socket, toast]);
+  }, [socket, updateActiveTitle, updateActiveContent]);
 
   const handleContentChange = useCallback((content) => {
     const text = content ?? "";
     setWordCount(text.trim().split(/\s+/).filter(Boolean).length);
     setCharCount(text.length);
-    setSaveStatus("Saving...");
-    clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => setSaveStatus("Saved"), 1500);
+  }, []);
+
+  // Driven by op:ack rather than a 1.5s timer, so "Saved" means the server
+  // acknowledged every local edit instead of merely that time passed.
+  const handleSaveStateChange = useCallback((state) => {
+    setSaveStatus(state === "saving" ? "Saving…" : "Saved");
+  }, []);
+
+  // The resync in useOT discards un-acked local edits. Say so, rather than
+  // letting the text change under the user with no explanation.
+  const handleResync = useCallback(() => {
+    toastRef.current.warning(
+      "Reconnected to the document — anything typed in the last moment may not have been saved."
+    );
+    // Put focus back where the user was working.
+    editorCoreRef.current?.focus?.();
   }, []);
 
   const handleTitleChange = useCallback((val) => {
@@ -219,12 +304,7 @@ export default function EditorPage() {
     if (doc) navigate(`/editor/${doc._id ?? doc.id}`);
   }, [createDoc, navigate]);
 
-  const exec = useCallback((cmd, val) => {
-    document.execCommand(cmd, false, val ?? null);
-    editorCoreRef.current?.focus?.();
-  }, []);
-
-  useEffect(() => () => { clearTimeout(saveTimer.current); clearTimeout(titleTimer.current); }, []);
+  useEffect(() => () => { clearTimeout(titleTimer.current); }, []);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: E.bg, fontFamily: E.font, color: E.fg, overflow: "hidden" }}>
@@ -246,20 +326,16 @@ export default function EditorPage() {
               style={{ background: E.muted, border: `1px solid ${E.primary}`, borderRadius: 5, color: E.fg, fontSize: 13, fontWeight: 600, padding: "2px 8px", outline: "none", fontFamily: E.font, width: 200 }}
               autoFocus />
           ) : (
-            <span style={{ fontSize: 13, fontWeight: 600, color: E.fg, cursor: "text" }} onClick={() => setEditingTitle(true)}>{title}</span>
+            <span style={{ fontSize: 13, fontWeight: 600, color: E.fg, cursor: isViewer ? "default" : "text" }}
+              onClick={() => { if (!isViewer) setEditingTitle(true); }}>{title}</span>
           )}
-          <button onClick={() => setEditingTitle(true)}
+          {!isViewer && <button onClick={() => setEditingTitle(true)}
             style={{ background: "none", border: "none", color: E.mutedFg, cursor: "pointer", padding: 2, borderRadius: 3, display: "flex" }}
             onMouseEnter={e => e.currentTarget.style.color = E.fg} onMouseLeave={e => e.currentTarget.style.color = E.mutedFg}>
             <span className="material-symbols-outlined" style={{ fontSize: 14 }}>edit</span>
-          </button>
+          </button>}
         </div>
 
-        <div style={{ width: 1, height: 16, background: E.border }} />
-
-        <div style={{ display: "flex", alignItems: "center", gap: 1 }}>
-          {["File", "Edit", "View", "Insert", "Format", "Tools"].map(m => <MenuItem key={m} label={m} />)}
-        </div>
 
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
           {/* Save status */}
@@ -291,7 +367,8 @@ export default function EditorPage() {
           )}
 
           {/* Share */}
-          <button style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 13px", background: E.primary, border: "none", borderRadius: 6, color: E.primFg, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: E.font }}
+          <button onClick={() => setShowShare(true)}
+            style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 13px", background: E.primary, border: "none", borderRadius: 6, color: E.primFg, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: E.font }}
             onMouseEnter={e => e.currentTarget.style.opacity = ".88"} onMouseLeave={e => e.currentTarget.style.opacity = "1"}>
             <span className="material-symbols-outlined" style={{ fontSize: 14, fontVariationSettings: "'FILL' 1" }}>group_add</span>
             Share
@@ -309,36 +386,19 @@ export default function EditorPage() {
         </div>
       </header>
 
-      {/* TOOLBAR */}
-      <div style={{ display: "flex", alignItems: "center", gap: 1, padding: "3px 10px", height: 38, background: E.sidebar, borderBottom: `1px solid ${E.border}`, flexShrink: 0, overflowX: "auto" }}>
-        <button style={{ display: "flex", alignItems: "center", gap: 3, padding: "2px 7px", background: E.muted, border: "none", borderRadius: 4, color: E.fg, fontSize: 12, cursor: "pointer", fontFamily: E.font, whiteSpace: "nowrap" }}>
-          Normal text <span className="material-symbols-outlined" style={{ fontSize: 12 }}>expand_more</span>
-        </button>
-        <button style={{ display: "flex", alignItems: "center", gap: 2, padding: "2px 6px", background: E.muted, border: "none", borderRadius: 4, color: E.fg, fontSize: 12, cursor: "pointer", fontFamily: E.font, minWidth: 40 }}>
-          14 <span className="material-symbols-outlined" style={{ fontSize: 12 }}>expand_more</span>
-        </button>
-        <TDiv />
-        <TBtn label="Undo" icon="undo" onClick={() => exec("undo")} />
-        <TBtn label="Redo" icon="redo" onClick={() => exec("redo")} />
-        <TDiv />
-        <TBtn label="Bold" onClick={() => exec("bold")}>          <b style={{ fontFamily: "serif" }}>B</b></TBtn>
-        <TBtn label="Italic" onClick={() => exec("italic")}>        <i style={{ fontFamily: "serif" }}>I</i></TBtn>
-        <TBtn label="Underline" onClick={() => exec("underline")}>     <u style={{ fontFamily: "serif" }}>U</u></TBtn>
-        <TBtn label="Strikethrough" onClick={() => exec("strikeThrough")}> <s style={{ fontFamily: "serif" }}>S</s></TBtn>
-        <TDiv />
-        <TBtn label="Align left" icon="format_align_left" onClick={() => exec("justifyLeft")} />
-        <TBtn label="Align center" icon="format_align_center" onClick={() => exec("justifyCenter")} />
-        <TBtn label="Align right" icon="format_align_right" onClick={() => exec("justifyRight")} />
-        <TDiv />
-        <TBtn label="Bullets" icon="format_list_bulleted" onClick={() => exec("insertUnorderedList")} />
-        <TBtn label="Numbered" icon="format_list_numbered" onClick={() => exec("insertOrderedList")} />
-        <TBtn label="Checklist" icon="checklist" onClick={() => { }} />
-        <TDiv />
-        <TBtn label="Link" icon="link" onClick={() => { const u = window.prompt("URL:"); if (u) exec("createLink", u); }} />
-        <TBtn label="Image" icon="image" onClick={() => { }} />
-        <TBtn label="Table" icon="table" onClick={() => { }} />
-        <TBtn label="Code" icon="code" onClick={() => exec("formatBlock", "pre")} />
-      </div>
+      {isViewer && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 8, padding: "8px 16px",
+          background: "rgba(245,158,11,.1)", borderBottom: "1px solid rgba(245,158,11,.25)",
+          color: "#f59e0b", fontSize: 12, flexShrink: 0,
+        }}>
+          <span className="material-symbols-outlined" style={{ fontSize: 15 }}>visibility</span>
+          <span>
+            <strong>View only.</strong> You can read this document and see live changes,
+            but not edit it. Ask the owner for edit access.
+          </span>
+        </div>
+      )}
 
       {/* BODY */}
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
@@ -355,6 +415,9 @@ export default function EditorPage() {
               onContentChange={handleContentChange}
               onCollaboratorsChange={setCollaborators}
               onRevisionChange={setRevision}
+              onSaveStateChange={handleSaveStateChange}
+              onResync={handleResync}
+              readOnly={isViewer}
               className="editor-canvas-new"
             />
           </div>
@@ -366,6 +429,7 @@ export default function EditorPage() {
             docId={docId}
             collaborators={collaborators}
             currentUser={currentUser}
+            connected={connected}
             onClose={() => setShowHistory(false)}
           />
         )}
@@ -379,6 +443,12 @@ export default function EditorPage() {
           <span style={{ fontSize: 11, color: E.mutedFg }}>{charCount} character{charCount !== 1 ? "s" : ""}</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {myRole === "viewer" && (
+            <>
+              <span style={{ fontSize: 11, color: "#f59e0b", fontWeight: 600 }}>View only</span>
+              <span style={{ color: E.border }}>|</span>
+            </>
+          )}
           <span style={{ fontSize: 11, color: E.mutedFg }}>No workspace</span>
           <span style={{ color: E.border }}>|</span>
           <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
@@ -387,6 +457,10 @@ export default function EditorPage() {
           </div>
         </div>
       </footer>
+
+      {showShare && (
+        <ShareModal docId={docId} currentUser={currentUser} onClose={() => setShowShare(false)} />
+      )}
 
       <style>{`
         .editor-canvas-new {

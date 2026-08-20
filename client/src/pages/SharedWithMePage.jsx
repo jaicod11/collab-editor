@@ -23,27 +23,9 @@ import Sidebar, { T, Icons } from "../components/Layout/Sidebar";
 import PortalMenu from "../components/UI/PortalMenu";
 import api from "../services/api";
 
-// ─── Category tag color palette (from Stitch) ─────────────────────────────────
-const CAT_COLORS = {
-    Product: { bg: "rgba(61,220,110,.13)", text: "#3ddc6e" },
-    Design: { bg: "rgba(224,92,42,.13)", text: "#e05c2a" },
-    Engineering: { bg: "rgba(42,122,224,.13)", text: "#2a7ae0" },
-    Research: { bg: "rgba(200,168,0,.13)", text: "#c8a800" },
-    Finance: { bg: "rgba(139,42,224,.13)", text: "#8b2ae0" },
-    Marketing: { bg: "rgba(224,42,106,.13)", text: "#e02a6a" },
-};
+const ICON_TINT = { bg: "rgba(122,122,122,.12)", icon: "#7a7a7a" };
 
-// ─── Row icon colors per category ─────────────────────────────────────────────
-const CAT_ICON_COLOR = {
-    Product: "#3ddc6e",
-    Design: "#e05c2a",
-    Engineering: "#2a7ae0",
-    Research: "#c8a800",
-    Finance: "#8b2ae0",
-    Marketing: "#e02a6a",
-};
 
-const CATEGORIES = ["All", "Product", "Design", "Engineering", "Research", "Finance", "Marketing"];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function docPk(doc) { return doc?._id ?? doc?.id ?? ""; }
@@ -60,15 +42,6 @@ function fmtDate(d) {
     return dt.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
 }
 
-function inferCategory(t = "") {
-    const s = t.toLowerCase();
-    if (s.includes("design") || s.includes("brand") || s.includes("ui") || s.includes("onboard")) return "Design";
-    if (s.includes("engineer") || s.includes("api") || s.includes("code") || s.includes("sprint")) return "Engineering";
-    if (s.includes("research") || s.includes("survey") || s.includes("user")) return "Research";
-    if (s.includes("market") || s.includes("copy") || s.includes("campaign")) return "Marketing";
-    if (s.includes("finance") || s.includes("investor") || s.includes("budget")) return "Finance";
-    return "Product";
-}
 
 // ─── Row icons (rotate per index, colored per category) ───────────────────────
 const ROW_ICONS = [
@@ -171,6 +144,11 @@ function ProfileDropdown({ user, open, onClose, onLogout, navigate }) {
 }
 
 // ─── Access badge ─────────────────────────────────────────────────────────────
+// Reads the role the server actually stores. This used to be computed as
+// `docPk(doc).charCodeAt(0) % 2 === 0` — the parity of the first character of
+// the document's ObjectId — so roughly half of all shared documents were
+// labelled read-only at random, and fabricated permissively: there was no
+// permission model at all, and every collaborator could edit.
 function AccessBadge({ canEdit }) {
     return canEdit ? (
         <span style={{ fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 4, background: "rgba(61,220,110,.13)", color: "#3ddc6e" }}>
@@ -188,13 +166,12 @@ function SharedRow({ doc, index, onOpen, onRemove }) {
     const [hov, setHov] = useState(false);
     const [menuOpen, setMenuOpen] = useState(false);
     const btnRef = useRef(null);
-    const cat = inferCategory(doc.title ?? "");
-    const catColor = CAT_COLORS[cat] ?? CAT_COLORS.Product;
-    const iconColor = CAT_ICON_COLOR[cat] ?? T.primary;
-    const iconBg = catColor.bg;
+    const iconColor = ICON_TINT.icon;
+    const iconBg = ICON_TINT.bg;
 
-    // Randomly assign Can edit vs Can view deterministically based on doc ID
-    const canEdit = docPk(doc).charCodeAt(0) % 2 === 0;
+    // The viewer's own role on this document, as stored by the server.
+    // `myRole` is attached by SharedWithMePage from the collaborator entry.
+    const canEdit = doc.myRole !== "viewer";
 
     return (
         <div
@@ -202,7 +179,7 @@ function SharedRow({ doc, index, onOpen, onRemove }) {
             onMouseLeave={() => setHov(false)}
             style={{
                 display: "grid",
-                gridTemplateColumns: "1fr 140px 170px 180px 120px 40px",
+                gridTemplateColumns: "1fr 170px 180px 120px 40px",
                 alignItems: "center", gap: 16, padding: "14px 24px",
                 borderBottom: `1px solid ${T.border}`,
                 background: hov ? "#1f1f1f" : "transparent",
@@ -217,13 +194,6 @@ function SharedRow({ doc, index, onOpen, onRemove }) {
                 </div>
                 <span style={{ fontSize: 14, fontWeight: 500, color: T.fg, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {doc.title ?? "Untitled Document"}
-                </span>
-            </div>
-
-            {/* Category tag */}
-            <div>
-                <span style={{ fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 4, background: catColor.bg, color: catColor.text }}>
-                    {cat}
                 </span>
             </div>
 
@@ -282,49 +252,71 @@ export default function SharedWithMePage() {
     const [documents, setDocuments] = useState([]);
     const [loading, setLoading] = useState(false);
     const [search, setSearch] = useState("");
-    const [activeFilter, setActiveFilter] = useState("All");
     const [sortBy, setSortBy] = useState("Last edited");
     const [profileOpen, setProfileOpen] = useState(false);
 
     // Load shared docs from API
+    // The toast helper is rebuilt on every ToastProvider render, so it is held
+    // in a ref rather than declared as an effect dependency — otherwise showing
+    // any toast anywhere would re-run this fetch.
+    const toastRef = useRef(toast);
+    toastRef.current = toast;
+
     useEffect(() => {
         setLoading(true);
         api.get("/documents", { params: { filter: "shared" } })
             .then(({ data }) => {
-                if (Array.isArray(data?.documents)) setDocuments(data.documents);
+                if (!Array.isArray(data?.documents)) return;
+                // Each document carries its full collaborator list with roles;
+                // pick out this user's entry so the row shows the real one.
+                setDocuments(
+                    data.documents.map((d) => ({
+                        ...d,
+                        myRole:
+                            (d.collaborators ?? []).find((c) => String(c._id) === String(user?.id))
+                                ?.role ?? "editor",
+                    }))
+                );
             })
-            .catch(() => { })
+            .catch(() => toastRef.current.error("Could not load shared documents"))
             .finally(() => setLoading(false));
-    }, []);
+        // user?.id is read to pick this person's role out of each collaborator
+        // list, so it is a real dependency, and a stable string.
+    }, [user?.id]);
 
     const filtered = useMemo(() => {
         let docs = [...documents];
         if (search.trim()) docs = docs.filter((d) => (d.title ?? "").toLowerCase().includes(search.toLowerCase()));
-        if (activeFilter !== "All") docs = docs.filter((d) => inferCategory(d.title ?? "") === activeFilter);
         if (sortBy === "Title") docs.sort((a, b) => (a.title ?? "").localeCompare(b.title ?? ""));
         if (sortBy === "Created") docs.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
         else docs.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
         return docs;
-    }, [documents, search, activeFilter, sortBy]);
+    }, [documents, search, sortBy]);
 
     const handleOpen = useCallback((doc) => navigate(`/editor/${docPk(doc)}`), [navigate]);
 
+    // Removes the current user from the document's collaborator list.
+    //
+    // This used to catch EVERY failure — network error, 401, 500 — drop the row
+    // from the table and fire a green success toast, so the user believed they
+    // had left a document they were still in. The row is only removed once the
+    // server confirms it. (The old comment claimed the endpoint did not exist;
+    // it does, at documentRoutes.js.)
     const handleRemove = useCallback(async (doc) => {
         try {
-            // Removes self from collaborators list
             await api.patch(`/documents/${docPk(doc)}/leave`);
             setDocuments((prev) => prev.filter((d) => docPk(d) !== docPk(doc)));
             toast.success("Removed from shared document");
-        } catch {
-            // Fallback: just remove from UI if endpoint not yet implemented
-            setDocuments((prev) => prev.filter((d) => docPk(d) !== docPk(doc)));
-            toast.success("Removed from shared document");
+        } catch (err) {
+            toast.error(
+                err.response?.data?.message ?? "Could not remove you from this document"
+            );
         }
     }, [toast]);
 
     return (
         <div style={{ display: "flex", minHeight: "100vh", background: T.bg, fontFamily: T.font, color: T.fg }}>
-            <Sidebar activeTab="shared" onNewDoc={() => navigate("/documents")} />
+            <Sidebar activeTab="shared" />
 
             <main style={{ flex: 1, padding: "40px 48px", overflowY: "auto" }}>
 
@@ -347,14 +339,8 @@ export default function SharedWithMePage() {
                         {/* Search */}
                         <div style={{ display: "flex", alignItems: "center", gap: 8, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 6, padding: "8px 12px", width: 220 }}>
                             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={T.mutedFg} strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round"><path d="m21 21-4.34-4.34" /><circle cx="11" cy="11" r="8" /></svg>
-                            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search documents..."
+                            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by title…"
                                 style={{ background: "none", border: "none", outline: "none", color: T.fg, fontSize: 13, fontFamily: T.font, width: "100%" }} />
-                        </div>
-
-                        {/* Bell */}
-                        <div style={{ width: 36, height: 36, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", color: T.mutedFg, position: "relative", cursor: "pointer" }}>
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M10.268 21a2 2 0 0 0 3.464 0m-10.47-5.674A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326" /></svg>
-                            <div style={{ position: "absolute", top: 8, right: 8, width: 6, height: 6, background: T.primary, borderRadius: "50%" }} />
                         </div>
 
                         {/* Avatar */}
@@ -368,27 +354,8 @@ export default function SharedWithMePage() {
                     </div>
                 </div>
 
-                {/* ── Category filter pills ─────────────────────────────────────── */}
+                {/* Sort control */}
                 <div style={{ display: "flex", gap: 8, marginBottom: 28, flexWrap: "wrap", alignItems: "center" }}>
-                    {CATEGORIES.map((cat) => {
-                        const active = activeFilter === cat;
-                        const col = CAT_COLORS[cat];
-                        return (
-                            <button key={cat} onClick={() => setActiveFilter(cat)}
-                                style={{
-                                    padding: "6px 14px", borderRadius: 6, fontSize: 13, fontWeight: 500,
-                                    background: active ? (col?.bg ?? T.sec) : T.surface,
-                                    color: active ? (col?.text ?? T.primary) : T.mutedFg,
-                                    border: `1px solid ${active ? (col?.text ?? T.primary) + "40" : T.border}`,
-                                    cursor: "pointer", fontFamily: T.font, transition: "all .15s",
-                                }}
-                                onMouseEnter={(e) => { if (!active) { e.currentTarget.style.borderColor = "#444"; e.currentTarget.style.color = T.fg; } }}
-                                onMouseLeave={(e) => { if (!active) { e.currentTarget.style.borderColor = T.border; e.currentTarget.style.color = T.mutedFg; } }}
-                            >
-                                {cat}
-                            </button>
-                        );
-                    })}
                     <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
                         <span style={{ fontSize: 12, color: T.mutedFg }}>Sort:</span>
                         <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}
@@ -402,8 +369,8 @@ export default function SharedWithMePage() {
                 <div style={{ background: T.surface, borderRadius: 10, border: `1px solid ${T.border}`, overflow: "hidden" }}>
 
                     {/* Header */}
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 140px 170px 180px 120px 40px", gap: 16, padding: "12px 24px", borderBottom: `1px solid ${T.border}` }}>
-                        {["TITLE", "TAG", "SHARED BY", "SHARED AT", "ACCESS", ""].map((h, i) => (
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 170px 180px 120px 40px", gap: 16, padding: "12px 24px", borderBottom: `1px solid ${T.border}` }}>
+                        {["TITLE", "SHARED BY", "SHARED AT", "ACCESS", ""].map((h, i) => (
                             <span key={i} style={{ fontSize: 11, fontWeight: 500, color: T.mutedFg, textTransform: "uppercase", letterSpacing: "0.08em" }}>{h}</span>
                         ))}
                     </div>
@@ -422,11 +389,11 @@ export default function SharedWithMePage() {
                                 <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
                             </div>
                             <p style={{ color: T.fg, fontSize: 15, fontWeight: 500, marginBottom: 6 }}>
-                                {search || activeFilter !== "All" ? "No matching documents" : "No shared documents yet"}
+                                {search ? "No matching documents" : "No shared documents yet"}
                             </p>
                             <p style={{ color: T.mutedFg, fontSize: 13, lineHeight: 1.6 }}>
-                                {search || activeFilter !== "All"
-                                    ? "Try adjusting your search or filter."
+                                {search
+                                    ? "Try adjusting your search."
                                     : "When someone shares a document with you, it will appear here."}
                             </p>
                         </div>

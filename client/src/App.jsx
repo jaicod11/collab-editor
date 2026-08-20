@@ -15,6 +15,7 @@ import ArchivePage from "./pages/ArchivePage";
 import NewDocumentPage from "./pages/NewDocumentPage";
 import SettingsPage from "./pages/SettingsPage";
 import EditorPage from "./pages/EditorPage";
+import JoinPage from "./pages/JoinPage";
 import { useAuthStore } from "./store/authSlice";
 
 function ProtectedRoute({ children }) {
@@ -76,6 +77,13 @@ export default function App() {
           />
           <Route path="/editor/:docId"
             element={<ProtectedRoute><EditorPage /></ProtectedRoute>}
+          />
+
+          {/* Share links. Protected: an anonymous visitor is bounced to /auth
+              with this path in location state, and PublicRoute returns them
+              here once they sign in. */}
+          <Route path="/join/:token"
+            element={<ProtectedRoute><JoinPage /></ProtectedRoute>}
           />
 
           {/* ── Fallback ────────────────────────────────────────────────── */}

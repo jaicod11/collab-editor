@@ -148,13 +148,8 @@ function ProfileSection({ user, updateUser }) {
                     <TextInput value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" />
                 </Field>
 
-                <Field label="Email Address">
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                        <TextInput value={user?.email ?? ""} disabled style={{ opacity: .6, cursor: "not-allowed", flex: 1 }} />
-                        <span style={{ fontSize: 11, fontWeight: 600, padding: "4px 10px", borderRadius: 30, background: T.sec, color: T.primary, whiteSpace: "nowrap" }}>
-                            Verified
-                        </span>
-                    </div>
+                <Field label="Email Address" hint="Your email cannot be changed here.">
+                    <TextInput value={user?.email ?? ""} disabled style={{ opacity: .6, cursor: "not-allowed" }} />
                 </Field>
 
                 <Field label="Bio" hint={`${bio.length}/280 characters`}>
@@ -186,6 +181,12 @@ function ProfileSection({ user, updateUser }) {
 // ─── Account section (change password) ────────────────────────────────────────
 function AccountSection() {
     const { toast } = useToast();
+    // Changing the password bumps the user's tokenVersion server-side, which
+    // revokes every token issued before it — including the one this tab is
+    // holding. The endpoint hands back a replacement; storing it is what keeps
+    // the user signed in. Discarding it (as this did) meant the next request
+    // 401'd and the axios interceptor bounced them to /auth.
+    const refreshToken = useAuthStore((s) => s.refreshToken);
     const [currentPassword, setCurrentPassword] = useState("");
     const [newPassword, setNewPassword] = useState("");
     const [confirmPassword, setConfirmPassword] = useState("");
@@ -203,7 +204,8 @@ function AccountSection() {
 
         setSaving(true);
         try {
-            await api.patch("/auth/password", { currentPassword, newPassword });
+            const { data } = await api.patch("/auth/password", { currentPassword, newPassword });
+            if (data?.token) refreshToken(data.token);
             toast.success("Password updated successfully");
             setCurrentPassword(""); setNewPassword(""); setConfirmPassword("");
         } catch (err) {

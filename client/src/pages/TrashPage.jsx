@@ -5,30 +5,11 @@ import { useAuthStore } from "../store/authSlice";
 import Sidebar, { T, Icons } from "../components/Layout/Sidebar";
 import api from "../services/api";
 
-// ─── Category tag colors (same as SharedWithMePage + General) ─────────────────
-const CAT_COLORS = {
-    General: { bg: "rgba(122,122,122,.12)", text: "#7a7a7a" },
-    Product: { bg: "rgba(61,220,110,.13)", text: "#3ddc6e" },
-    Design: { bg: "rgba(224,92,42,.13)", text: "#e05c2a" },
-    Engineering: { bg: "rgba(42,122,224,.13)", text: "#2a7ae0" },
-    Research: { bg: "rgba(200,168,0,.13)", text: "#c8a800" },
-    Finance: { bg: "rgba(139,42,224,.13)", text: "#8b2ae0" },
-    Marketing: { bg: "rgba(224,42,106,.13)", text: "#e02a6a" },
-};
+const ICON_TINT = { bg: "rgba(122,122,122,.12)", icon: "#7a7a7a" };
 
-const CAT_ICON_COLOR = {
-    General: "#7a7a7a",
-    Product: "#3ddc6e",
-    Design: "#e05c2a",
-    Engineering: "#2a7ae0",
-    Research: "#c8a800",
-    Finance: "#8b2ae0",
-    Marketing: "#e02a6a",
-};
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function docPk(doc) { return doc?._id ?? doc?.id ?? ""; }
-function ownerName(o) { if (!o) return "You"; return typeof o === "object" ? (o.name ?? o.email ?? "You") : String(o); }
 function userInitials(n) { if (!n) return "?"; return n.split(" ").map(x => x[0]).join("").toUpperCase().slice(0, 2); }
 
 function fmtDate(d) {
@@ -41,16 +22,6 @@ function fmtDate(d) {
     return dt.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
 }
 
-function inferCategory(t = "") {
-    const s = t.toLowerCase();
-    if (s.includes("design") || s.includes("brand") || s.includes("refresh")) return "Design";
-    if (s.includes("engineer") || s.includes("api") || s.includes("migration")) return "Engineering";
-    if (s.includes("research") || s.includes("survey") || s.includes("interview")) return "Research";
-    if (s.includes("market") || s.includes("copy") || s.includes("campaign")) return "Marketing";
-    if (s.includes("finance") || s.includes("investor") || s.includes("budget")) return "Finance";
-    if (s.includes("product") || s.includes("roadmap") || s.includes("okr")) return "Product";
-    return "General";
-}
 
 // ─── Row icons (colored per category) ────────────────────────────────────────
 const ROW_ICONS = [
@@ -146,9 +117,8 @@ function TrashRow({ doc, index, onRestore, onDelete }) {
     const [restoreHov, setRestoreHov] = useState(false);
     const [deleteHov, setDeleteHov] = useState(false);
 
-    const cat = inferCategory(doc.title ?? "");
-    const catColor = CAT_COLORS[cat] ?? CAT_COLORS.General;
-    const iconColor = CAT_ICON_COLOR[cat] ?? "#7a7a7a";
+    const catColor = ICON_TINT;
+    const iconColor = ICON_TINT.icon;
 
     return (
         <div
@@ -156,7 +126,7 @@ function TrashRow({ doc, index, onRestore, onDelete }) {
             onMouseLeave={() => setHov(false)}
             style={{
                 display: "grid",
-                gridTemplateColumns: "1fr 130px 170px 180px 32px 32px",
+                gridTemplateColumns: "1fr 170px 180px 32px 32px",
                 alignItems: "center", gap: 16, padding: "13px 24px",
                 borderBottom: `1px solid ${T.border}`,
                 background: hov ? "#1f1f1f" : "transparent",
@@ -173,26 +143,26 @@ function TrashRow({ doc, index, onRestore, onDelete }) {
                 </span>
             </div>
 
-            {/* Tag */}
-            <div>
-                <span style={{ fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 4, background: catColor.bg, color: catColor.text }}>
-                    {cat}
-                </span>
-            </div>
-
-            {/* Deleted by */}
+            {/* Deleted by — the person who moved it to Trash, recorded on the
+                status transition. This used to show the document's OWNER and its
+                updatedAt, i.e. whoever created it and whenever it was last
+                edited, neither of which is who binned it. */}
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <div style={{ width: 22, height: 22, borderRadius: "50%", background: "rgba(122,122,122,.25)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700, color: T.mutedFg, flexShrink: 0 }}>
-                    {userInitials(ownerName(doc.owner))}
-                </div>
-                <span style={{ fontSize: 13, color: T.mutedFg }}>
-                    {ownerName(doc.owner)}
-                </span>
+                {doc.statusChangedBy?.name ? (
+                    <>
+                        <div style={{ width: 22, height: 22, borderRadius: "50%", background: "rgba(122,122,122,.25)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700, color: T.mutedFg, flexShrink: 0 }}>
+                            {userInitials(doc.statusChangedBy.name)}
+                        </div>
+                        <span style={{ fontSize: 13, color: T.mutedFg }}>{doc.statusChangedBy.name}</span>
+                    </>
+                ) : (
+                    <span style={{ fontSize: 13, color: T.mutedFg }}>—</span>
+                )}
             </div>
 
             {/* Deleted at */}
             <span style={{ fontSize: 13, color: T.mutedFg, whiteSpace: "nowrap" }}>
-                {fmtDate(doc.updatedAt ?? doc.createdAt)}
+                {doc.statusChangedAt ? fmtDate(doc.statusChangedAt) : "—"}
             </span>
 
             {/* Restore button */}
@@ -226,6 +196,12 @@ function TrashRow({ doc, index, onRestore, onDelete }) {
 export default function TrashPage() {
     const navigate = useNavigate();
     const { toast } = useToast();
+
+    // The toast helper is rebuilt on every ToastProvider render, so it is held
+    // in a ref rather than declared as an effect dependency — otherwise showing
+    // any toast anywhere would re-run this fetch.
+    const toastRef = useRef(toast);
+    toastRef.current = toast;
     const user = useAuthStore((s) => s.user);
     const logout = useAuthStore((s) => s.logout);
 
@@ -241,7 +217,7 @@ export default function TrashPage() {
         setLoading(true);
         api.get("/documents", { params: { filter: "trash" } })
             .then(({ data }) => setDocuments(data?.documents ?? []))
-            .catch(() => { })
+            .catch(() => toastRef.current.error("Could not load the trash"))
             .finally(() => setLoading(false));
     }, []);
 
@@ -272,18 +248,25 @@ export default function TrashPage() {
     }, [deleteTarget, toast]);
 
     // ── Empty trash ────────────────────────────────────────────────────────────
+    // allSettled: a single failure (for example a document owned by someone
+    // else) used to abort the whole batch report, leaving the table showing
+    // everything even though most rows were gone.
     const handleEmptyTrash = useCallback(async () => {
         setEmptyConfirm(false);
-        try {
-            await Promise.all(documents.map((d) => api.delete(`/documents/${docPk(d)}`)));
-            setDocuments([]);
-            toast.success("Trash emptied");
-        } catch { toast.error("Failed to empty trash"); }
+        const targets = documents.map((d) => docPk(d));
+        const results = await Promise.allSettled(targets.map((id) => api.delete(`/documents/${id}`)));
+        const failed = new Set(targets.filter((_, i) => results[i].status === "rejected"));
+        setDocuments((prev) => prev.filter((d) => failed.has(docPk(d))));
+
+        const ok = targets.length - failed.size;
+        if (failed.size === 0) toast.success("Trash emptied");
+        else if (ok === 0) toast.error("Could not delete any documents");
+        else toast.warning(`${ok} deleted, ${failed.size} could not be deleted`);
     }, [documents, toast]);
 
     return (
         <div style={{ display: "flex", minHeight: "100vh", background: T.bg, fontFamily: T.font, color: T.fg }}>
-            <Sidebar activeTab="trash" onNewDoc={() => navigate("/documents")} />
+            <Sidebar activeTab="trash" />
 
             <main style={{ flex: 1, padding: "40px 48px", overflowY: "auto" }}>
 
@@ -297,7 +280,7 @@ export default function TrashPage() {
                             Deleted Documents
                         </h1>
                         <p style={{ fontSize: 13, color: T.mutedFg }}>
-                            Items in trash are permanently deleted after 30 days.
+                            Items stay here until you delete them permanently.
                         </p>
                     </div>
 
@@ -305,14 +288,8 @@ export default function TrashPage() {
                         {/* Search */}
                         <div style={{ display: "flex", alignItems: "center", gap: 8, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 6, padding: "8px 12px", width: 220 }}>
                             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={T.mutedFg} strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round"><path d="m21 21-4.34-4.34" /><circle cx="11" cy="11" r="8" /></svg>
-                            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search trash..."
+                            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search trash by title…"
                                 style={{ background: "none", border: "none", outline: "none", color: T.fg, fontSize: 13, fontFamily: T.font, width: "100%" }} />
-                        </div>
-
-                        {/* Bell */}
-                        <div style={{ width: 36, height: 36, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", color: T.mutedFg, position: "relative", cursor: "pointer" }}>
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M10.268 21a2 2 0 0 0 3.464 0m-10.47-5.674A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326" /></svg>
-                            <div style={{ position: "absolute", top: 8, right: 8, width: 6, height: 6, background: T.primary, borderRadius: "50%" }} />
                         </div>
 
                         {/* Avatar */}
@@ -348,8 +325,8 @@ export default function TrashPage() {
                 <div style={{ background: T.surface, borderRadius: 10, border: `1px solid ${T.border}`, overflow: "hidden", marginBottom: 16 }}>
 
                     {/* Header */}
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 130px 170px 180px 32px 32px", gap: 16, padding: "12px 24px", borderBottom: `1px solid ${T.border}` }}>
-                        {["TITLE", "TAG", "DELETED BY", "DELETED AT", "", ""].map((h, i) => (
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 170px 180px 32px 32px", gap: 16, padding: "12px 24px", borderBottom: `1px solid ${T.border}` }}>
+                        {["TITLE", "DELETED BY", "DELETED AT", "", ""].map((h, i) => (
                             <span key={i} style={{ fontSize: 11, fontWeight: 500, color: T.mutedFg, textTransform: "uppercase", letterSpacing: "0.08em" }}>{h}</span>
                         ))}
                     </div>
@@ -371,7 +348,7 @@ export default function TrashPage() {
                                 {search ? "No matching documents" : "Trash is empty"}
                             </p>
                             <p style={{ color: T.mutedFg, fontSize: 13, lineHeight: 1.6 }}>
-                                {search ? "Try adjusting your search." : "Deleted documents will appear here for 30 days before being permanently removed."}
+                                {search ? "Try adjusting your search." : "Documents you move to Trash will appear here."}
                             </p>
                         </div>
                     ) : (

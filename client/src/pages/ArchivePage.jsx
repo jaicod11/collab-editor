@@ -32,25 +32,8 @@ import PortalMenu from "../components/UI/PortalMenu";
 import api from "../services/api";
 
 // ─── Category tag colors (same across all pages) ──────────────────────────────
-const CAT = {
-    General: { bg: "rgba(122,122,122,.12)", text: "#7a7a7a" },
-    Product: { bg: "rgba(61,220,110,.13)", text: "#3ddc6e" },
-    Design: { bg: "rgba(224,92,42,.13)", text: "#e05c2a" },
-    Engineering: { bg: "rgba(42,122,224,.13)", text: "#2a7ae0" },
-    Research: { bg: "rgba(200,168,0,.13)", text: "#c8a800" },
-    Finance: { bg: "rgba(139,42,224,.13)", text: "#8b2ae0" },
-    Marketing: { bg: "rgba(224,42,106,.13)", text: "#e02a6a" },
-};
+const ICON_TINT = { bg: "rgba(122,122,122,.12)", icon: "#7a7a7a" };
 
-const CAT_ICON = {
-    General: "#7a7a7a",
-    Product: "#3ddc6e",
-    Design: "#e05c2a",
-    Engineering: "#2a7ae0",
-    Research: "#c8a800",
-    Finance: "#8b2ae0",
-    Marketing: "#e02a6a",
-};
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function docPk(d) { return d?._id ?? d?.id ?? ""; }
@@ -62,16 +45,6 @@ function fmtArchived(d) {
     return "Archived " + new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
-function inferCategory(t = "") {
-    const s = t.toLowerCase();
-    if (s.includes("design") || s.includes("brand") || s.includes("onboard") || s.includes("ui")) return "Design";
-    if (s.includes("engineer") || s.includes("api") || s.includes("code") || s.includes("sprint")) return "Engineering";
-    if (s.includes("research") || s.includes("survey") || s.includes("user")) return "Research";
-    if (s.includes("market") || s.includes("copy") || s.includes("campaign")) return "Marketing";
-    if (s.includes("finance") || s.includes("investor") || s.includes("budget")) return "Finance";
-    if (s.includes("product") || s.includes("roadmap") || s.includes("okr")) return "Product";
-    return "General";
-}
 
 // ─── Row icons ────────────────────────────────────────────────────────────────
 const ROW_ICONS = [
@@ -173,9 +146,8 @@ function ArchiveRow({ doc, index, onOpen, onRestore, onDelete }) {
     const [hov, setHov] = useState(false);
     const [menu, setMenu] = useState(false);
     const btnRef = useRef(null);
-    const cat = inferCategory(doc.title ?? "");
-    const catColor = CAT[cat] ?? CAT.General;
-    const iconColor = CAT_ICON[cat] ?? "#7a7a7a";
+    const catColor = ICON_TINT;
+    const iconColor = ICON_TINT.icon;
 
     return (
         <div
@@ -183,7 +155,7 @@ function ArchiveRow({ doc, index, onOpen, onRestore, onDelete }) {
             onMouseLeave={() => setHov(false)}
             style={{
                 display: "grid",
-                gridTemplateColumns: "1fr 140px 180px 160px 36px",
+                gridTemplateColumns: "1fr 180px 160px 36px",
                 alignItems: "center", gap: 16, padding: "14px 24px",
                 borderBottom: `1px solid ${T.border}`,
                 background: hov ? "#1f1f1f" : "transparent",
@@ -201,13 +173,6 @@ function ArchiveRow({ doc, index, onOpen, onRestore, onDelete }) {
                 </span>
             </div>
 
-            {/* Tag */}
-            <div>
-                <span style={{ fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 4, background: catColor.bg, color: catColor.text }}>
-                    {cat}
-                </span>
-            </div>
-
             {/* Author */}
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <div style={{ width: 22, height: 22, borderRadius: "50%", background: `linear-gradient(135deg,${T.primary},#16a34a)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700, color: T.primFg, flexShrink: 0 }}>
@@ -218,9 +183,10 @@ function ArchiveRow({ doc, index, onOpen, onRestore, onDelete }) {
                 </span>
             </div>
 
-            {/* Archived on */}
+            {/* Archived on — recorded when the document was moved to Archive,
+                not its last-edited time. */}
             <span style={{ fontSize: 13, color: T.mutedFg, whiteSpace: "nowrap" }}>
-                {fmtArchived(doc.updatedAt ?? doc.createdAt)}
+                {doc.statusChangedAt ? fmtArchived(doc.statusChangedAt) : "—"}
             </span>
 
             {/* Three-dot trigger */}
@@ -255,11 +221,17 @@ export default function ArchivePage() {
 
     // Load archived docs — filter:"archived" scopes the query on the backend
     // to status:"Archived" directly, so no client-side filtering needed.
+    // The toast helper is rebuilt on every ToastProvider render, so it is held
+    // in a ref rather than declared as an effect dependency — otherwise showing
+    // any toast anywhere would re-run this fetch.
+    const toastRef = useRef(toast);
+    toastRef.current = toast;
+
     useEffect(() => {
         setLoading(true);
         api.get("/documents", { params: { filter: "archived" } })
             .then(({ data }) => setDocuments(data?.documents ?? []))
-            .catch(() => { })
+            .catch(() => toastRef.current.error("Could not load archived documents"))
             .finally(() => setLoading(false));
     }, []);
 
@@ -279,13 +251,22 @@ export default function ArchivePage() {
     }, [toast]);
 
     // ── Restore all ────────────────────────────────────────────────────────────
+    // allSettled, not all: one rejection used to discard the whole result set,
+    // so setDocuments([]) never ran and an error toast fired even though most
+    // of the documents had been restored. Report what actually happened.
     const handleRestoreAll = useCallback(async () => {
         setRestoreAllOpen(false);
-        try {
-            await Promise.all(documents.map((d) => api.patch(`/documents/${docPk(d)}`, { status: "Active" })));
-            setDocuments([]);
-            toast.success(`${documents.length} document${documents.length !== 1 ? "s" : ""} restored`);
-        } catch { toast.error("Failed to restore all documents"); }
+        const targets = documents.map((d) => docPk(d));
+        const results = await Promise.allSettled(
+            targets.map((id) => api.patch(`/documents/${id}`, { status: "Active" }))
+        );
+        const failed = new Set(targets.filter((_, i) => results[i].status === "rejected"));
+        setDocuments((prev) => prev.filter((d) => failed.has(docPk(d))));
+
+        const ok = targets.length - failed.size;
+        if (failed.size === 0) toast.success(`${ok} document${ok !== 1 ? "s" : ""} restored`);
+        else if (ok === 0) toast.error("Could not restore any documents");
+        else toast.warning(`${ok} restored, ${failed.size} could not be restored`);
     }, [documents, toast]);
 
     // ── Single delete ──────────────────────────────────────────────────────────
@@ -302,18 +283,22 @@ export default function ArchivePage() {
     // ── Delete all permanently ─────────────────────────────────────────────────
     const handleDeleteAll = useCallback(async () => {
         setDeleteAllOpen(false);
-        try {
-            await Promise.all(documents.map((d) => api.delete(`/documents/${docPk(d)}`)));
-            setDocuments([]);
-            toast.success("All archived documents permanently deleted");
-        } catch { toast.error("Failed to delete all documents"); }
+        const targets = documents.map((d) => docPk(d));
+        const results = await Promise.allSettled(targets.map((id) => api.delete(`/documents/${id}`)));
+        const failed = new Set(targets.filter((_, i) => results[i].status === "rejected"));
+        setDocuments((prev) => prev.filter((d) => failed.has(docPk(d))));
+
+        const ok = targets.length - failed.size;
+        if (failed.size === 0) toast.success(`${ok} document${ok !== 1 ? "s" : ""} permanently deleted`);
+        else if (ok === 0) toast.error("Could not delete any documents");
+        else toast.warning(`${ok} deleted, ${failed.size} could not be deleted`);
     }, [documents, toast]);
 
     const handleOpen = useCallback((doc) => navigate(`/editor/${docPk(doc)}`), [navigate]);
 
     return (
         <div style={{ display: "flex", minHeight: "100vh", background: T.bg, fontFamily: T.font, color: T.fg }}>
-            <Sidebar activeTab="archive" onNewDoc={() => navigate("/new")} />
+            <Sidebar activeTab="archive" />
 
             <main style={{ flex: 1, padding: "40px 48px", overflowY: "auto" }}>
 
@@ -331,7 +316,7 @@ export default function ArchivePage() {
                     {/* Search */}
                     <div style={{ display: "flex", alignItems: "center", gap: 8, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 6, padding: "8px 12px", width: 240 }}>
                         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={T.mutedFg} strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round"><path d="m21 21-4.34-4.34" /><circle cx="11" cy="11" r="8" /></svg>
-                        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search archive..."
+                        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search archive by title…"
                             style={{ background: "none", border: "none", outline: "none", color: T.fg, fontSize: 13, fontFamily: T.font, width: "100%" }} />
                     </div>
                 </div>
@@ -350,8 +335,8 @@ export default function ArchivePage() {
                 <div style={{ background: T.surface, borderRadius: 10, border: `1px solid ${T.border}`, overflow: "hidden", marginBottom: 32 }}>
 
                     {/* Header */}
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 140px 180px 160px 36px", gap: 16, padding: "12px 24px", borderBottom: `1px solid ${T.border}` }}>
-                        {["TITLE", "TAG", "AUTHOR", "ARCHIVED ON", ""].map((h, i) => (
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 180px 160px 36px", gap: 16, padding: "12px 24px", borderBottom: `1px solid ${T.border}` }}>
+                        {["TITLE", "AUTHOR", "ARCHIVED ON", ""].map((h, i) => (
                             <span key={i} style={{ fontSize: 11, fontWeight: 500, color: T.mutedFg, textTransform: "uppercase", letterSpacing: "0.08em" }}>{h}</span>
                         ))}
                     </div>

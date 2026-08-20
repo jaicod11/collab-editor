@@ -285,10 +285,7 @@ function WorkspaceRow({ ws, onDelete }) {
 }
 
 // ─── ROOT: Sidebar ────────────────────────────────────────────────────────────
-// `onNewDoc` is accepted so existing call sites keep working, but the New
-// Document button navigates to /new instead of invoking it. Reconciling the two
-// belongs to the React phase.
-export default function Sidebar({ activeTab, onNewDoc: _onNewDoc }) {
+export default function Sidebar({ activeTab }) {
     const navigate = useNavigate();
     const { toast } = useToast();
     const { workspaces, loading, loadWorkspaces, createWorkspace, deleteWorkspace } = useWorkspace();
@@ -296,7 +293,9 @@ export default function Sidebar({ activeTab, onNewDoc: _onNewDoc }) {
     const [modalOpen, setModalOpen] = useState(false);
     const [deleteTarget, setDeleteTarget] = useState(null);
 
-    useEffect(() => { loadWorkspaces(); }, []);
+    // loadWorkspaces is useCallback([]) — a stable identity, so declaring the
+    // dependency is honest rather than a re-render trigger.
+    useEffect(() => { loadWorkspaces(); }, [loadWorkspaces]);
 
     const handleCreate = async (name, color) => {
         const result = await createWorkspace(name, color);

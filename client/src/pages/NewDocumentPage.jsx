@@ -35,12 +35,6 @@ const CAT = {
 
 const FILTERS = ["All Templates", "General", "Product", "Design", "Engineering", "Research", "Finance", "Marketing"];
 
-const WORKSPACES = [
-    { id: "none", label: "No workspace" },
-    { id: "dt", label: "Design Team" },
-    { id: "eng", label: "Engineering" },
-    { id: "mkt", label: "Marketing" },
-];
 
 // ─── Template card icons ──────────────────────────────────────────────────────
 const TemplateIcons = {
@@ -247,7 +241,6 @@ export default function NewDocumentPage() {
 
     const [selectedTemplate, setSelectedTemplate] = useState(TEMPLATES[0]);
     const [docTitle, setDocTitle] = useState("");
-    const [workspace, setWorkspace] = useState("none");
     const [activeFilter, setActiveFilter] = useState("All Templates");
     const [creating, setCreating] = useState(false);
     const [profileOpen, setProfileOpen] = useState(false);
@@ -294,7 +287,7 @@ export default function NewDocumentPage() {
         <div style={{ display: "flex", minHeight: "100vh", background: T.bg, fontFamily: T.font, color: T.fg }}>
 
             {/* Sidebar — New Document button just reloads this page */}
-            <Sidebar activeTab="new" onNewDoc={() => navigate("/new")} />
+            <Sidebar activeTab="new" />
 
             <main style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: "100vh" }}>
 
@@ -307,11 +300,7 @@ export default function NewDocumentPage() {
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 6, padding: "8px 12px", width: 220 }}>
                             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={T.mutedFg} strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round"><path d="m21 21-4.34-4.34" /><circle cx="11" cy="11" r="8" /></svg>
-                            <input placeholder="Search documents..." style={{ background: "none", border: "none", outline: "none", color: T.fg, fontSize: 13, fontFamily: T.font, width: "100%" }} />
-                        </div>
-                        <div style={{ width: 36, height: 36, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", color: T.mutedFg, position: "relative", cursor: "pointer" }}>
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M10.268 21a2 2 0 0 0 3.464 0m-10.47-5.674A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326" /></svg>
-                            <div style={{ position: "absolute", top: 8, right: 8, width: 6, height: 6, background: T.primary, borderRadius: "50%" }} />
+                            <input placeholder="Search by title…" style={{ background: "none", border: "none", outline: "none", color: T.fg, fontSize: 13, fontFamily: T.font, width: "100%" }} />
                         </div>
                         <div style={{ position: "relative" }}>
                             <button onClick={() => setProfileOpen(o => !o)}
@@ -352,24 +341,6 @@ export default function NewDocumentPage() {
                             />
                         </div>
 
-                        {/* Workspace dropdown */}
-                        <div style={{ position: "relative" }}>
-                            <select
-                                value={workspace}
-                                onChange={(e) => setWorkspace(e.target.value)}
-                                style={{
-                                    appearance: "none", background: T.surface, border: `1px solid ${T.border}`,
-                                    borderRadius: 7, padding: "10px 36px 10px 14px", color: T.mutedFg,
-                                    fontSize: 14, fontFamily: T.font, cursor: "pointer", outline: "none",
-                                    minWidth: 180, transition: "border-color .15s",
-                                }}
-                                onFocus={(e) => e.target.style.borderColor = T.primary}
-                                onBlur={(e) => e.target.style.borderColor = T.border}
-                            >
-                                {WORKSPACES.map((w) => <option key={w.id} value={w.id}>{w.label}</option>)}
-                            </select>
-                            <svg style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", pointerEvents: "none" }} xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={T.mutedFg} strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6" /></svg>
-                        </div>
                     </div>
 
                     {/* Category filter pills */}

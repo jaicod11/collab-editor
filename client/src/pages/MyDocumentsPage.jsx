@@ -16,7 +16,7 @@
  * "Move to Archive" and "Move to Trash" are BOTH soft-deletes — neither one
  * destroys the document. They just move it to a different status:
  *   Active → Archived  (shows up on the Archive page, fully restorable)
- *   Active → Deleted   (shows up on the Trash page, restorable for 30 days)
+ *   Active → Deleted   (shows up on the Trash page, restorable until deleted)
  * Permanent, irreversible deletion only happens from the Trash page itself.
  *
  * ── Dropdown menu fix ────────────────────────────────────────────────────────
@@ -53,22 +53,8 @@ function fmtDate(d) {
     return dt.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
 }
 
-function inferCategory(t = "") {
-    const s = t.toLowerCase();
-    if (s.includes("design") || s.includes("brand") || s.includes("ui") || s.includes("onboard")) return "Design";
-    if (s.includes("engineer") || s.includes("api") || s.includes("code") || s.includes("sprint")) return "Engineering";
-    if (s.includes("research") || s.includes("survey") || s.includes("user")) return "Research";
-    if (s.includes("market") || s.includes("copy") || s.includes("campaign")) return "Marketing";
-    if (s.includes("finance") || s.includes("investor") || s.includes("budget")) return "Finance";
-    return "Product";
-}
 
-const CATEGORIES = ["All", "Product", "Design", "Engineering", "Research", "Finance", "Marketing"];
 
-const TAG_STYLE = (cat) => ({
-    bg: ["Product", "Design"].includes(cat) ? T.sec : T.muted,
-    text: ["Product", "Design"].includes(cat) ? T.primary : T.mutedFg,
-});
 
 // ─── Row icons (rotate through based on index) ────────────────────────────────
 const ROW_ICONS = [
@@ -80,11 +66,6 @@ const ROW_ICONS = [
     <svg key="row-icon-5" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>,
 ];
 
-// ─── localStorage starred helpers ────────────────────────────────────────────
-const STARRED_KEY = "collab-starred";
-function getStarred() { try { return new Set(JSON.parse(localStorage.getItem(STARRED_KEY) ?? "[]")); } catch { return new Set(); } }
-function isStarred(id) { return getStarred().has(id); }
-function toggleStar(id) { const s = getStarred(); s.has(id) ? s.delete(id) : s.add(id); localStorage.setItem(STARRED_KEY, JSON.stringify([...s])); return s.has(id); }
 
 // ─── Menu item row (shared visual style) ──────────────────────────────────────
 function MenuItemRow({ icon, label, onClick, danger, muted }) {
@@ -109,9 +90,10 @@ function MenuItemRow({ icon, label, onClick, danger, muted }) {
 }
 
 // ─── Three-dot context menu (rendered via portal — see PortalMenu.jsx) ───────
-function ContextMenu({ doc, anchorRef, onClose, onOpen, onRename, onDuplicate, onArchive, onMoveToTrash }) {
+function ContextMenu({ doc, anchorRef, onClose, onOpen, onRename, onDuplicate, onArchive, onMoveToTrash, onToggleStar }) {
     const { toast } = useToast();
-    const [starred, setStarred] = useState(() => isStarred(docPk(doc)));
+    // Server-backed: a star follows the user, not the browser.
+    const starred = Boolean(doc.starred);
 
     const copyLink = () => {
         const url = `${window.location.origin}/editor/${docPk(doc)}`;
@@ -119,11 +101,14 @@ function ContextMenu({ doc, anchorRef, onClose, onOpen, onRename, onDuplicate, o
         onClose();
     };
 
-    const handleStar = () => {
-        const nowStarred = toggleStar(docPk(doc));
-        setStarred(nowStarred);
-        toast.success(nowStarred ? "Added to starred" : "Removed from starred");
+    const handleStar = async () => {
         onClose();
+        try {
+            await onToggleStar(doc, !starred);
+            toast.success(starred ? "Removed from starred" : "Added to starred");
+        } catch {
+            toast.error("Could not update your star");
+        }
     };
 
     return (
@@ -199,8 +184,8 @@ function MoveToTrashModal({ doc, onConfirm, onClose }) {
                 style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: 24, width: 400, boxShadow: "0 20px 60px rgba(0,0,0,.6)" }}>
                 <h3 style={{ fontSize: 16, fontWeight: 600, color: T.fg, marginBottom: 8, fontFamily: T.font }}>Move to Trash</h3>
                 <p style={{ fontSize: 13, color: T.mutedFg, marginBottom: 24, lineHeight: 1.6 }}>
-                    Move "<strong style={{ color: T.fg }}>{doc.title ?? "Untitled"}</strong>" to Trash? You can restore it
-                    later, or it will be permanently deleted after 30 days.
+                    Move "<strong style={{ color: T.fg }}>{doc.title ?? "Untitled"}</strong>" to Trash?
+                    It stays there until you delete it permanently, and you can restore it at any time.
                 </p>
                 <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
                     <button onClick={onClose}
@@ -218,12 +203,11 @@ function MoveToTrashModal({ doc, onConfirm, onClose }) {
 }
 
 // ─── Document table row ───────────────────────────────────────────────────────
-function DocRow({ doc, index, onOpen, onRename, onDuplicate, onArchive, onMoveToTrash }) {
+function DocRow({ doc, index, onOpen, onRename, onDuplicate, onArchive, onMoveToTrash, onToggleStar }) {
     const [hov, setHov] = useState(false);
     const [menuOpen, setMenuOpen] = useState(false);
     const btnRef = useRef(null);
-    const cat = inferCategory(doc.title ?? "");
-    const tag = TAG_STYLE(cat);
+
 
     return (
         <div
@@ -231,7 +215,7 @@ function DocRow({ doc, index, onOpen, onRename, onDuplicate, onArchive, onMoveTo
             onMouseLeave={() => { setHov(false); }}
             style={{
                 display: "grid",
-                gridTemplateColumns: "1fr 130px 160px 160px 44px",
+                gridTemplateColumns: "1fr 160px 160px 44px",
                 alignItems: "center", gap: 16,
                 padding: "14px 20px",
                 borderBottom: `1px solid ${T.border}`,
@@ -247,13 +231,6 @@ function DocRow({ doc, index, onOpen, onRename, onDuplicate, onArchive, onMoveTo
                 </div>
                 <span style={{ fontSize: 14, fontWeight: 500, color: T.fg, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {doc.title ?? "Untitled Document"}
-                </span>
-            </div>
-
-            {/* Tag */}
-            <div>
-                <span style={{ fontSize: 11, fontWeight: 500, padding: "3px 10px", borderRadius: 4, background: tag.bg, color: tag.text }}>
-                    {cat}
                 </span>
             </div>
 
@@ -298,6 +275,7 @@ function DocRow({ doc, index, onOpen, onRename, onDuplicate, onArchive, onMoveTo
                         onDuplicate={onDuplicate}
                         onArchive={onArchive}
                         onMoveToTrash={onMoveToTrash}
+                        onToggleStar={onToggleStar}
                     />
                 )}
             </div>
@@ -359,30 +337,43 @@ export default function MyDocumentsPage() {
 
     const [documents, setDocuments] = useState([]);
     const [search, setSearch] = useState("");
-    const [activeFilter, setActiveFilter] = useState("All");
     const [sortBy, setSortBy] = useState("Last edited");
     const [profileOpen, setProfileOpen] = useState(false);
     const [renameDoc, setRenameDoc] = useState(null);
     const [trashTarget, setTrashTarget] = useState(null); // doc pending "Move to Trash" confirm
 
+    // loadDocuments is useCallback'd over zustand store actions, which keep a
+    // stable identity, so declaring the dependency does not make this re-run.
+    // The toast helper is rebuilt on every ToastProvider render, so it is held
+    // in a ref rather than declared as an effect dependency — otherwise showing
+    // any toast anywhere would re-run this fetch.
+    const toastRef = useRef(toast);
+    toastRef.current = toast;
+
     useEffect(() => {
         loadDocuments()
             .then((data) => { if (Array.isArray(data?.documents)) setDocuments(data.documents); })
-            .catch(() => { });
-    }, []);
+            .catch(() => toastRef.current.error("Could not load your documents"));
+    }, [loadDocuments]);
 
     // Filter + sort
     const filtered = useMemo(() => {
         let docs = [...documents];
         if (search.trim()) docs = docs.filter((d) => (d.title ?? "").toLowerCase().includes(search.toLowerCase()));
-        if (activeFilter !== "All") docs = docs.filter((d) => inferCategory(d.title ?? "") === activeFilter);
         if (sortBy === "Title") docs.sort((a, b) => (a.title ?? "").localeCompare(b.title ?? ""));
         if (sortBy === "Created") docs.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
         if (sortBy === "Last edited") docs.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
         return docs;
-    }, [documents, search, activeFilter, sortBy]);
+    }, [documents, search, sortBy]);
 
     const handleOpen = useCallback((doc) => navigate(`/editor/${docPk(doc)}`), [navigate]);
+
+    const handleToggleStar = useCallback(async (doc, next) => {
+        const id = docPk(doc);
+        if (next) await api.put(`/documents/${id}/star`);
+        else await api.delete(`/documents/${id}/star`);
+        setDocuments((prev) => prev.map((d) => (docPk(d) === id ? { ...d, starred: next } : d)));
+    }, []);
 
     const handleNewDoc = useCallback(async () => {
         const doc = await createDoc("Untitled Document");
@@ -432,7 +423,7 @@ export default function MyDocumentsPage() {
 
     return (
         <div style={{ display: "flex", minHeight: "100vh", background: T.bg, fontFamily: T.font, color: T.fg }}>
-            <Sidebar activeTab="docs" onNewDoc={handleNewDoc} />
+            <Sidebar activeTab="docs" />
 
             <main style={{ flex: 1, padding: "40px 48px", overflowY: "auto" }}>
 
@@ -448,14 +439,8 @@ export default function MyDocumentsPage() {
                         {/* Search */}
                         <div style={{ display: "flex", alignItems: "center", gap: 8, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 6, padding: "8px 12px", width: 220 }}>
                             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={T.mutedFg} strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round"><path d="m21 21-4.34-4.34" /><circle cx="11" cy="11" r="8" /></svg>
-                            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search documents..."
+                            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by title…"
                                 style={{ background: "none", border: "none", outline: "none", color: T.fg, fontSize: 13, fontFamily: T.font, width: "100%" }} />
-                        </div>
-
-                        {/* Bell */}
-                        <div style={{ width: 36, height: 36, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", color: T.mutedFg, position: "relative", cursor: "pointer" }}>
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M10.268 21a2 2 0 0 0 3.464 0m-10.47-5.674A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326" /></svg>
-                            <div style={{ position: "absolute", top: 8, right: 8, width: 6, height: 6, background: T.primary, borderRadius: "50%" }} />
                         </div>
 
                         {/* Avatar */}
@@ -469,27 +454,8 @@ export default function MyDocumentsPage() {
                     </div>
                 </div>
 
-                {/* Category filter pills */}
-                <div style={{ display: "flex", gap: 8, marginBottom: 24, flexWrap: "wrap" }}>
-                    {CATEGORIES.map((cat) => {
-                        const active = activeFilter === cat;
-                        return (
-                            <button key={cat} onClick={() => setActiveFilter(cat)}
-                                style={{
-                                    padding: "6px 16px", borderRadius: 6, fontSize: 13, fontWeight: 500,
-                                    background: active ? T.primary : T.surface,
-                                    color: active ? T.primFg : T.mutedFg,
-                                    border: `1px solid ${active ? T.primary : T.border}`,
-                                    cursor: "pointer", fontFamily: T.font, transition: "all .15s",
-                                }}
-                                onMouseEnter={(e) => { if (!active) { e.currentTarget.style.borderColor = "#444"; e.currentTarget.style.color = T.fg; } }}
-                                onMouseLeave={(e) => { if (!active) { e.currentTarget.style.borderColor = T.border; e.currentTarget.style.color = T.mutedFg; } }}
-                            >
-                                {cat}
-                            </button>
-                        );
-                    })}
-
+                {/* Sort control */}
+                <div style={{ display: "flex", gap: 8, marginBottom: 24, flexWrap: "wrap", alignItems: "center" }}>
                     {/* Sort dropdown */}
                     <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
                         <span style={{ fontSize: 12, color: T.mutedFg }}>Sort:</span>
@@ -504,11 +470,11 @@ export default function MyDocumentsPage() {
                 <div style={{ background: T.surface, borderRadius: 10, border: `1px solid ${T.border}`, overflow: "hidden" }}>
                     {/* Header */}
                     <div style={{
-                        display: "grid", gridTemplateColumns: "1fr 130px 160px 160px 44px",
+                        display: "grid", gridTemplateColumns: "1fr 160px 160px 44px",
                         gap: 16, padding: "12px 20px",
                         borderBottom: `1px solid ${T.border}`,
                     }}>
-                        {["TITLE", "TAG", "AUTHOR", "LAST EDITED", ""].map((h, i) => (
+                        {["TITLE", "AUTHOR", "LAST EDITED", ""].map((h, i) => (
                             <span key={i} style={{ fontSize: 11, fontWeight: 500, color: T.mutedFg, textTransform: "uppercase", letterSpacing: "0.08em" }}>{h}</span>
                         ))}
                     </div>
@@ -524,9 +490,9 @@ export default function MyDocumentsPage() {
                     ) : filtered.length === 0 ? (
                         <div style={{ padding: "60px 20px", textAlign: "center" }}>
                             <p style={{ color: T.mutedFg, fontSize: 14, marginBottom: 16 }}>
-                                {search || activeFilter !== "All" ? "No documents match your filters." : "No documents yet."}
+                                {search ? "No documents match your search." : "No documents yet."}
                             </p>
-                            {!search && activeFilter === "All" && (
+                            {!search && (
                                 <button onClick={handleNewDoc}
                                     style={{ background: T.primary, color: T.primFg, border: "none", borderRadius: 6, padding: "8px 20px", fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: T.font }}>
                                     Create your first document
@@ -541,6 +507,7 @@ export default function MyDocumentsPage() {
                                 onDuplicate={handleDuplicate}
                                 onArchive={handleArchive}
                                 onMoveToTrash={(d) => setTrashTarget(d)}
+                                onToggleStar={handleToggleStar}
                             />
                         ))
                     )}
@@ -550,7 +517,6 @@ export default function MyDocumentsPage() {
                 {filtered.length > 0 && (
                     <p style={{ fontSize: 12, color: T.mutedFg, marginTop: 12, textAlign: "right" }}>
                         {filtered.length} document{filtered.length !== 1 ? "s" : ""}
-                        {activeFilter !== "All" ? ` in ${activeFilter}` : ""}
                     </p>
                 )}
             </main>
