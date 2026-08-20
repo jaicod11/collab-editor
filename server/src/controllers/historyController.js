@@ -10,12 +10,33 @@ const Document = require("../models/Document");
 const redisService = require("../services/redisService");
 const documentService = require("../services/documentService");
 const snapshotService = require("../services/snapshotService");
+const historyService = require("../services/historyService");
 
 // ── GET /api/documents/:id/history ───────────────────────────────────────────
+//
+// Returns COALESCED entries: consecutive operations by one author, over a
+// contiguous revision range, within a session window, become a single row. The
+// op log itself stays per-keystroke — OT catch-up and restore both depend on
+// that fidelity — this is a read-time view.
+//
+// The default limit is entries, not operations. It used to be 20 raw ops, i.e.
+// the last twenty characters typed.
+
+const DEFAULT_LIMIT = 25;
+const MAX_LIMIT = 100;
+// How many raw operations to pull in to build one page. Typing produces one row
+// per character, so a page of entries can span a lot of them.
+const RAW_FETCH_CAP = 2000;
+
 exports.getHistory = async (req, res, next) => {
   try {
     const { id: docId } = req.params;
-    const { limit = 20, before } = req.query; // `before` = revision cursor for pagination
+    const { before } = req.query;
+
+    const requested = Number(req.query.limit);
+    const limit = Number.isFinite(requested)
+      ? Math.min(Math.max(Math.trunc(requested), 1), MAX_LIMIT)
+      : DEFAULT_LIMIT;
 
     // The op log embeds the literal text of every edit — owner/collaborator only.
     await documentService.assertAccess(docId, req.user.id);
@@ -26,25 +47,27 @@ exports.getHistory = async (req, res, next) => {
     const ops = await Operation.find(query)
       .populate("userId", "name email")
       .sort({ revision: -1 })
-      .limit(Number(limit))
+      .limit(RAW_FETCH_CAP)
       .lean();
 
-    // Shape into version history entries
-    const history = ops.map((op) => ({
-      id: op._id,
-      revision: op.revision,
-      author: {
-        id: op.userId?._id,
-        name: op.userId?.name ?? "Unknown",
-        initials: (op.userId?.name ?? "?").split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2),
-      },
-      opType: op.op?.type,
-      description: describeOp(op.op),
-      appliedAt: op.appliedAt,
-      snapshotId: op._id,
-    }));
+    const grouped = historyService.coalesceOperations(ops);
+    const cappedOut = ops.length === RAW_FETCH_CAP;
 
-    res.json({ history, hasMore: ops.length === Number(limit) });
+    // If the fetch hit the cap, the OLDEST group may be truncated mid-run — its
+    // earlier operations are below the window. Drop it rather than showing a
+    // partial count, and let the next page rebuild it whole.
+    const usable = cappedOut && grouped.length > 1 ? grouped.slice(0, -1) : grouped;
+
+    const page = usable.slice(0, limit);
+    const hasMore = usable.length > limit || cappedOut;
+    // Cursor for the next page: strictly below this page's oldest revision.
+    const nextBefore = page.length ? page[page.length - 1].fromRevision : null;
+
+    res.json({
+      history: page.map(({ authorId: _authorId, isRestore: _isRestore, ...entry }) => entry),
+      hasMore,
+      nextBefore,
+    });
   } catch (err) {
     next(err);
   }
@@ -108,42 +131,3 @@ exports.restore = async (req, res, next) => {
     next(err);
   }
 };
-
-// ─── Helper ────────────────────────────────────────────────────────────────────
-// Exported for tests — history descriptions are user-visible text and the
-// batch/noop/restore branches are easy to regress silently.
-function describeOp(op) {
-  if (!op) return "Unknown change";
-
-  if (op.type === "insert") {
-    const preview = op.text?.slice(0, 40) ?? "";
-    return `Inserted "${preview}${op.text?.length > 40 ? "…" : ""}"`;
-  }
-
-  if (op.type === "delete") {
-    // Zero-length deletes are no longer produced by the transform, and are
-    // never persisted, but guard anyway so a legacy row cannot render as
-    // "Deleted 0 characters".
-    if (!(op.len > 0)) return "No change";
-    return `Deleted ${op.len} character${op.len === 1 ? "" : "s"}`;
-  }
-
-  if (op.type === "batch") {
-    // A delete split around a concurrent insert.
-    const total = (op.ops ?? [])
-      .filter((o) => o?.type === "delete" && o.len > 0)
-      .reduce((sum, o) => sum + o.len, 0);
-    if (total > 0) return `Deleted ${total} character${total === 1 ? "" : "s"}`;
-    return "Document modified";
-  }
-
-  if (op.type === "noop") return "No change";
-
-  if (op.type === "restore") {
-    return `Restored the document to revision ${op.toRevision}`;
-  }
-
-  return "Document modified";
-}
-
-exports._describeOp = describeOp;

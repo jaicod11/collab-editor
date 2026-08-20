@@ -42,6 +42,7 @@ function api(method, pathname, token, body) {
 
 let server;
 let token;
+let secondToken;
 
 before(async () => {
   server = spawn("node", ["src/index.js"], {
@@ -61,17 +62,23 @@ before(async () => {
     name: "Restore Tester", email: `p3-restore-${Date.now()}@example.invalid`, password: "restorePass123",
   });
   token = reg.body.token;
+
+  const second = await api("POST", "/api/auth/register", null, {
+    name: "Second Author", email: `p3-second-${Date.now()}@example.invalid`, password: "restorePass123",
+  });
+  secondToken = second.body.token;
 }, { timeout: 40_000 });
 
 after(async () => {
+  if (secondToken) await api("DELETE", "/api/auth/me", secondToken).catch(() => {});
   if (token) await api("DELETE", "/api/auth/me", token).catch(() => {});
   if (server && !server.killed) server.kill("SIGKILL");
   await wait(200);
 });
 
 /** Connect a socket, join a document, resolve once doc:load arrives. */
-async function joinDoc(docId) {
-  const s = io(`http://127.0.0.1:${PORT}`, { auth: { token }, transports: ["websocket"], reconnection: false });
+async function joinDoc(docId, asToken = token) {
+  const s = io(`http://127.0.0.1:${PORT}`, { auth: { token: asToken }, transports: ["websocket"], reconnection: false });
   const st = { socket: s, loads: [], errors: [], acks: [] };
   s.on("doc:load", (d) => st.loads.push(d));
   s.on("doc:error", (e) => st.errors.push(e));
@@ -92,21 +99,47 @@ describe("restore picks the nearest snapshot at or before the target", () => {
     // revision 50 — NEWER than the revision we will restore to. That is exactly
     // the case the old code got wrong: the replay range came out empty and the
     // caller silently received the rev-50 snapshot instead.
-    let expectedAt10 = null;
-    for (let i = 0; i < 60; i++) {
-      const ch = String.fromCharCode(97 + (i % 26));
+    // Give a second author edit access, so the history coalescer breaks the run
+    // into groups at the author change. History entries are now per editing
+    // session rather than per keystroke, so a boundary is what makes an
+    // arbitrary older revision addressable at all.
+    const share = await api("POST", `/api/documents/${docId}/share`, token);
+    await api("POST", `/api/documents/join/${share.body.shareToken}`, secondToken, { requestedRole: "editor" });
+    const queue = await api("GET", `/api/documents/${docId}/requests`, token);
+    await api("POST", `/api/documents/${docId}/requests/${queue.body.requests[0].id}/approve`, token, { role: "editor" });
+    const other = await joinDoc(docId, secondToken);
+
+    // Author A writes the first ten characters: revisions 1..10.
+    for (let i = 0; i < 10; i++) {
+      const ch = String.fromCharCode(97 + i);
       c.socket.emit("op:submit", { docId, op: { type: "insert", pos: i, text: ch, site: "restore-site" }, revision: i });
+      await wait(45);
+    }
+    await wait(600);
+    assert.equal(c.acks.length, 10, "author A's first ten edits acked");
+
+    // Author B writes one character: revision 11, closing A's first group.
+    other.socket.emit("op:submit", { docId, op: { type: "insert", pos: 10, text: "!", site: "second-site" }, revision: 10 });
+    await wait(700);
+
+    // Author A writes 49 more: revisions 12..60, so a snapshot lands at 50 —
+    // NEWER than the revision we will restore to. That is exactly the case the
+    // old code got wrong: the replay range came out empty and the caller
+    // silently received the rev-50 snapshot instead.
+    for (let i = 0; i < 49; i++) {
+      c.socket.emit("op:submit", {
+        docId, op: { type: "insert", pos: 11 + i, text: "z", site: "restore-site" },
+        revision: 11 + i,
+      });
       await wait(35);
-      if (i === 9) expectedAt10 = c.acks.length; // 10 ops acked so far
     }
     await wait(2500);
-    assert.equal(c.acks.length, 60, "all 60 edits acked");
-    assert.ok(expectedAt10);
 
     const history = await api("GET", `/api/history/${docId}?limit=100`, token);
     const entries = history.body.history;
-    const target = entries.find((h) => h.revision === 10);
-    assert.ok(target, "revision 10 is in the history");
+    const target = entries.find((h) => h.toRevision === 10);
+    assert.ok(target, `no entry ending at revision 10: ${JSON.stringify(entries.map((e) => [e.fromRevision, e.toRevision]))}`);
+    other.socket.close();
 
     // Independently derive what revision 10 should contain: the first 10 chars.
     const expected = "abcdefghij";
@@ -161,7 +194,10 @@ describe("cache coherence", () => {
     await wait(500);
 
     const history = await api("GET", `/api/history/${docId}`, token);
-    const first = history.body.history.find((h) => h.revision === 1);
+    // History is coalesced, so the three keystrokes are one entry; take the
+    // oldest group rather than looking for a per-keystroke revision.
+    const first = history.body.history.at(-1);
+    assert.ok(first, "the document has history");
     c.loads.length = 0;
     c.socket.emit("doc:restore", { docId, versionId: first.id });
     await wait(1200);

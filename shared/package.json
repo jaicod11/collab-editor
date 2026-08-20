@@ -8,6 +8,7 @@
     "./ot/operations.js": "./ot/operations.js",
     "./ot/operations": "./ot/operations.js",
     "./ot/client-sync.js": "./ot/client-sync.js",
+    "./ot/diff.js": "./ot/diff.js",
     "./ot/client-sync": "./ot/client-sync.js"
   },
   "scripts": {

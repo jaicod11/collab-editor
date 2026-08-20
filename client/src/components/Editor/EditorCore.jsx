@@ -57,7 +57,10 @@ const EditorCore = forwardRef(function EditorCore(
   const editorRef = useRef(null);
 
   // ── OT engine — ONE instance only ────────────────────────────────────────
-  const { handleEditorInput, seed, content, revision, loaded, saveState } = useOT({
+  const {
+    handleEditorInput, replaceSelection, normalizeIfStructured,
+    seed, content, revision, loaded, saveState,
+  } = useOT({
     socket,
     docId,
     editorRef,
@@ -118,10 +121,114 @@ const EditorCore = forwardRef(function EditorCore(
     getEditorEl: () => editorRef.current,
   }), [revision, loaded]);
 
+  // ── Plain-text input policy ───────────────────────────────────────────────
+  //
+  // The document is a flat string and the sync engine reads it with
+  // textContent. Anything the browser does to the DOM that textContent cannot
+  // see is invisible to the diff, produces no operation, and is wiped the
+  // moment a remote op rewrites the element — which is how two clients ended up
+  // showing the same 64 characters as three lines and one line.
+  //
+  // So every native path that builds structure instead of characters is
+  // intercepted here and turned into ordinary text.
+  const isComposingRef = useRef(false);
+
+  useEffect(() => {
+    const el = editorRef.current;
+    if (!el || readOnly) return undefined;
+
+    // beforeinput reports WHAT the browser is about to do, before it does it.
+    const onBeforeInput = (e) => {
+      switch (e.inputType) {
+        // Enter and Shift+Enter. The browser would insert a <div> or a <br>;
+        // neither shows up in textContent, so the typist sees a line break that
+        // never reaches anyone else.
+        case "insertParagraph":
+        case "insertLineBreak":
+          e.preventDefault();
+          replaceSelection("\n");
+          break;
+
+        // Cmd/Ctrl+B, I, U still apply native formatting in a contentEditable
+        // even with the toolbar gone (Phase 6). The markup would be invisible
+        // to the diff and destroyed on the next remote op, so refuse it.
+        case "formatBold":
+        case "formatItalic":
+        case "formatUnderline":
+        case "formatStrikeThrough":
+        case "formatSuperscript":
+        case "formatSubscript":
+        case "formatJustifyFull":
+        case "formatJustifyCenter":
+        case "formatJustifyLeft":
+        case "formatJustifyRight":
+        case "formatIndent":
+        case "formatOutdent":
+        case "insertOrderedList":
+        case "insertUnorderedList":
+        case "insertHorizontalRule":
+          e.preventDefault();
+          break;
+
+        // The browser's undo stack is a DOM history, and it has no idea that
+        // other people have edited this document since. Replaying it would
+        // reinstate structure and fight OT. Refused deliberately; a real
+        // collaborative undo is per-author and belongs in the OT layer.
+        case "historyUndo":
+        case "historyRedo":
+          e.preventDefault();
+          break;
+
+        default:
+          break;
+      }
+    };
+
+    // Paste and drop carry HTML. Take the plain-text flavour only; multi-line
+    // text arrives as "\n" characters and generates real ops.
+    const onPaste = (e) => {
+      e.preventDefault();
+      const text = e.clipboardData?.getData("text/plain") ?? "";
+      if (text) replaceSelection(text.replace(/\r\n?/g, "\n"));
+    };
+
+    const onDrop = (e) => {
+      e.preventDefault();
+      const text = e.dataTransfer?.getData("text/plain") ?? "";
+      if (text) replaceSelection(text.replace(/\r\n?/g, "\n"));
+    };
+
+    // IME composition (CJK, accents, mobile autocorrect) mutates the DOM in
+    // intermediate states. Diffing mid-composition emits ops for text the user
+    // has not committed; wait for compositionend.
+    const onCompositionStart = () => { isComposingRef.current = true; };
+    const onCompositionEnd = () => {
+      isComposingRef.current = false;
+      normalizeIfStructured();
+      handleEditorInput();
+    };
+
+    el.addEventListener("beforeinput", onBeforeInput);
+    el.addEventListener("paste", onPaste);
+    el.addEventListener("drop", onDrop);
+    el.addEventListener("compositionstart", onCompositionStart);
+    el.addEventListener("compositionend", onCompositionEnd);
+    return () => {
+      el.removeEventListener("beforeinput", onBeforeInput);
+      el.removeEventListener("paste", onPaste);
+      el.removeEventListener("drop", onDrop);
+      el.removeEventListener("compositionstart", onCompositionStart);
+      el.removeEventListener("compositionend", onCompositionEnd);
+    };
+  }, [readOnly, replaceSelection, normalizeIfStructured, handleEditorInput]);
+
   const handleInput = useCallback(() => {
-    handleEditorInput();
+    if (isComposingRef.current) return; // mid-IME: not committed text yet
+    // Backstop: if anything still managed to put elements in the editor, flatten
+    // them before diffing. normalizeIfStructured re-diffs itself when it acts.
+    if (!normalizeIfStructured()) handleEditorInput();
     broadcastCursor();
-  }, [handleEditorInput, broadcastCursor]);
+  }, [handleEditorInput, normalizeIfStructured, broadcastCursor]);
 
   const handleKeyUp   = useCallback(() => broadcastCursor(), [broadcastCursor]);
   const handleMouseUp = useCallback(() => broadcastCursor(), [broadcastCursor]);
@@ -142,7 +249,12 @@ const EditorCore = forwardRef(function EditorCore(
         onInput={readOnly ? undefined : handleInput}
         onKeyUp={readOnly ? undefined : handleKeyUp}
         onMouseUp={handleMouseUp}
-        style={readOnly ? { cursor: "default" } : undefined}
+        // white-space is set inline, not left to the Tailwind class. The
+        // utility does currently win, but only because EditorPage's runtime
+        // <style> block happens not to set white-space — and that block is
+        // injected after the bundle, so it would silently override it. A
+        // document whose line breaks are "\n" cannot afford that to be luck.
+        style={{ whiteSpace: "pre-wrap", overflowWrap: "break-word", ...(readOnly ? { cursor: "default" } : null) }}
         className={`
           min-h-[60vh] text-on-surface leading-relaxed text-lg outline-none
           focus:ring-0 whitespace-pre-wrap break-words

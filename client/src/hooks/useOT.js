@@ -16,6 +16,7 @@ import { applyOp, isNoop, flatten } from "../lib/ot/operations";
 import {
   createSyncState, applyLocal, receiveAck, receiveRemote,
 } from "@shared/ot/client-sync.js";
+import { diffToOp } from "@shared/ot/diff.js";
 
 /**
  * Per-tab site id — the deterministic tie-break for two inserts at the same
@@ -56,6 +57,28 @@ function readCaretOffset(el) {
   probe.selectNodeContents(el);
   probe.setEnd(range.startContainer, range.startOffset);
   return probe.toString().length;
+}
+
+/**
+ * The current selection as character offsets within `el`, or null when the
+ * selection is elsewhere. Unlike readCaretOffset this reports both ends, so a
+ * paste or an Enter can replace a highlighted range.
+ */
+function readSelectionRange(el) {
+  const sel = window.getSelection?.();
+  if (!sel || sel.rangeCount === 0) return null;
+  const range = sel.getRangeAt(0);
+  if (!el.contains(range.startContainer) || !el.contains(range.endContainer)) return null;
+
+  const toOffset = (node, offset) => {
+    const probe = range.cloneRange();
+    probe.selectNodeContents(el);
+    probe.setEnd(node, offset);
+    return probe.toString().length;
+  };
+  const start = toOffset(range.startContainer, range.startOffset);
+  const end = toOffset(range.endContainer, range.endOffset);
+  return { start: Math.min(start, end), end: Math.max(start, end) };
 }
 
 /** Put the caret `offset` characters into `el`, clamped to its content. */
@@ -114,6 +137,10 @@ export function useOT({ socket, docId, editorRef, onResync }) {
   // Set when a resync is requested, so the doc:load that answers it can be
   // distinguished from an ordinary join and reported to the user.
   const resyncPendingRef = useRef(false);
+
+  // handleEditorInput is defined below these callbacks; the ref breaks the
+  // ordering cycle without making every caller depend on its identity.
+  const handleEditorInputRef = useRef(null);
 
   const [content, setContent] = useState("");
   const [revision, setRevision] = useState(0);
@@ -181,43 +208,6 @@ export function useOT({ socket, docId, editorRef, onResync }) {
     writeText(text);
   }, [editorRef, writeText]);
 
-  // ── Diff two strings → insert/delete op ──────────────────────────────────
-  const diffToOp = useCallback((oldText, newText) => {
-    if (oldText === newText) return null;
-
-    let start = 0;
-    while (
-      start < oldText.length &&
-      start < newText.length &&
-      oldText[start] === newText[start]
-    ) start++;
-
-    let oldEnd = oldText.length;
-    let newEnd = newText.length;
-    while (
-      oldEnd > start &&
-      newEnd > start &&
-      oldText[oldEnd - 1] === newText[newEnd - 1]
-    ) { oldEnd--; newEnd--; }
-
-    const deleted = oldText.slice(start, oldEnd);
-    const inserted = newText.slice(start, newEnd);
-
-    if (deleted.length > 0 && inserted.length === 0) {
-      return { type: "delete", pos: start, len: deleted.length };
-    }
-    if (inserted.length > 0 && deleted.length === 0) {
-      return { type: "insert", pos: start, text: inserted };
-    }
-    if (deleted.length > 0 && inserted.length > 0) {
-      return [
-        { type: "delete", pos: start, len: deleted.length },
-        { type: "insert", pos: start, text: inserted },
-      ];
-    }
-    return null;
-  }, []);
-
   // ── Wire a single op to the server and mark it outstanding ────────────────
   const sendOp = useCallback((op) => {
     if (!socket?.connected || isNoop(op)) return;
@@ -256,7 +246,56 @@ export function useOT({ socket, docId, editorRef, onResync }) {
 
     const ops = (Array.isArray(op) ? op : [op]).map((o) => ({ ...o, site: SITE_ID }));
     ops.forEach(submitOp);
-  }, [readText, diffToOp, submitOp]);
+  }, [readText, submitOp]);
+
+  handleEditorInputRef.current = handleEditorInput;
+
+  // ── Local text mutation ───────────────────────────────────────────────────
+  // Everything that would otherwise let the browser build DOM structure routes
+  // through here instead: Enter, paste, drop. The editor's content is rewritten
+  // as a SINGLE text node, so "\n" is an ordinary character that flows through
+  // diffToOp -> op:submit -> OT like any other, and the DOM never carries state
+  // the sync engine cannot see.
+  const replaceSelection = useCallback((insert) => {
+    const el = editorRef?.current;
+    if (!el) return;
+
+    const current = el.textContent ?? "";
+    const sel = readSelectionRange(el) ?? { start: current.length, end: current.length };
+    const next = current.slice(0, sel.start) + insert + current.slice(sel.end);
+
+    // Assigning textContent collapses the element to one text node, which is
+    // exactly the invariant we want to hold after every local edit.
+    el.textContent = next;
+    prevContentRef.current = current; // diff against what was there BEFORE
+    writeCaretOffset(el, sel.start + insert.length);
+
+    // Programmatic textContent assignment fires no input event, so drive the
+    // diff explicitly. handleEditorInput re-reads the DOM and emits the ops.
+    handleEditorInputRef.current?.();
+  }, [editorRef]);
+
+  /**
+   * If the browser has put element nodes in the editor, flatten them back to
+   * text and re-diff.
+   *
+   * This is the backstop for any input path not explicitly handled: an
+   * unhandled case degrades to "the formatting was dropped" instead of "the DOM
+   * changed, textContent did not, and the two clients silently diverge".
+   */
+  const normalizeIfStructured = useCallback(() => {
+    const el = editorRef?.current;
+    if (!el) return false;
+    const hasElements = Array.from(el.childNodes).some((n) => n.nodeType !== Node.TEXT_NODE);
+    if (!hasElements) return false;
+
+    const caret = readCaretOffset(el);
+    const text = el.textContent ?? "";
+    el.textContent = text;
+    if (caret != null) writeCaretOffset(el, caret);
+    handleEditorInputRef.current?.();
+    return true;
+  }, [editorRef]);
 
   // ── Socket event handlers ─────────────────────────────────────────────────
   useEffect(() => {
@@ -343,6 +382,8 @@ export function useOT({ socket, docId, editorRef, onResync }) {
   return {
     submitOp,
     handleEditorInput,
+    replaceSelection,
+    normalizeIfStructured,
     seed,
     content,
     revision,

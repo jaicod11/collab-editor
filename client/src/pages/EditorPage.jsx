@@ -30,6 +30,19 @@ function fmtTime(d) {
   return dt.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
 }
 
+/**
+ * An entry now covers a RANGE of operations, so show the span when it spans
+ * anything, and a single time when it does not.
+ */
+function fmtSpan(entry) {
+  const end = entry.appliedAt;
+  const start = entry.startedAt ?? end;
+  const seconds = Math.round((new Date(end) - new Date(start)) / 1000);
+  if (!Number.isFinite(seconds) || seconds < 30) return fmtTime(end);
+  const mins = Math.round(seconds / 60);
+  return mins < 1 ? `${fmtTime(end)} · ${seconds}s` : `${fmtTime(end)} · ${mins}m`;
+}
+
 function groupByDate(items) {
   const groups = {}, now = Date.now();
   items.forEach(a => {
@@ -55,23 +68,76 @@ function Avatar({ name, size = 24, dot = false }) {
   );
 }
 
-function VersionPanel({ docId, collaborators, currentUser, connected, onClose }) {
+function VersionPanel({ docId, socket, collaborators, currentUser, connected, onClose }) {
   const [history, setHistory] = useState([]);
   const [state, setState] = useState("loading"); // loading | ready | error
+  const [nextBefore, setNextBefore] = useState(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
 
-  useEffect(() => {
+  // Load (or reload) the newest page.
+  const load = useCallback(async ({ quiet = false } = {}) => {
     if (!docId) return;
-    setState("loading");
-    api.get(`/history/${docId}`)
-      .then(({ data }) => {
-        setHistory(Array.isArray(data.history) ? data.history : []);
-        setState("ready");
-      })
-      // Failures used to be swallowed by `.catch(() => {})` and then papered
-      // over with fabricated entries, so a broken endpoint looked like a
-      // populated audit trail. Surface it instead.
-      .catch(() => setState("error"));
+    if (!quiet) setState("loading");
+    try {
+      const { data } = await api.get(`/history/${docId}`);
+      setHistory(Array.isArray(data.history) ? data.history : []);
+      setNextBefore(data.nextBefore ?? null);
+      setHasMore(Boolean(data.hasMore));
+      setState("ready");
+    } catch {
+      // Failures used to be swallowed by `.catch(() => {})` and papered over
+      // with fabricated entries, so a broken endpoint looked like a populated
+      // audit trail. Surface it — but a failed BACKGROUND refresh must not blow
+      // away a panel that is already showing good data.
+      if (!quiet) setState("error");
+    }
   }, [docId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // ── Keep the panel live ───────────────────────────────────────────────────
+  //
+  // Refetch on edit traffic rather than pushing history over the socket. The
+  // server would otherwise have to build and broadcast a coalesced view to
+  // every room member on every keystroke — work that is wasted whenever the
+  // panel is closed, which is most of the time. Pulling costs one query per
+  // burst and only while somebody is looking.
+  //
+  // Debounced, because the events are per-keystroke and the entries they
+  // produce are per-session: refetching on each one would be pure churn.
+  useEffect(() => {
+    if (!socket || !docId) return undefined;
+    let timer = null;
+    const schedule = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => load({ quiet: true }), 3000);
+    };
+    socket.on("op:ack", schedule);
+    socket.on("op:broadcast", schedule);
+    return () => {
+      clearTimeout(timer);
+      socket.off("op:ack", schedule);
+      socket.off("op:broadcast", schedule);
+    };
+  }, [socket, docId, load]);
+
+  // ── Pagination ────────────────────────────────────────────────────────────
+  // The `before` cursor existed server-side but nothing in the UI ever sent it.
+  const loadOlder = useCallback(async () => {
+    if (!nextBefore || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const { data } = await api.get(`/history/${docId}`, { params: { before: nextBefore } });
+      setHistory((prev) => [...prev, ...(Array.isArray(data.history) ? data.history : [])]);
+      setNextBefore(data.nextBefore ?? null);
+      setHasMore(Boolean(data.hasMore));
+    } catch {
+      /* keep what is already shown */
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [docId, nextBefore, loadingMore]);
 
   const grouped = useMemo(
     () => (history.length > 0 ? groupByDate(history) : {}),
@@ -158,7 +224,7 @@ function VersionPanel({ docId, collaborators, currentUser, connected, onClose })
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
                     <span style={{ fontSize: 12, fontWeight: 500, color: E.fg }}>{entry.author?.name ?? "Unknown"}</span>
-                    <span style={{ fontSize: 10, color: E.mutedFg }}>{fmtTime(entry.appliedAt)}</span>
+                    <span style={{ fontSize: 10, color: E.mutedFg }}>{fmtSpan(entry)}</span>
                   </div>
                   <p style={{ fontSize: 11, color: E.mutedFg, marginTop: 1, lineHeight: 1.4 }}>{entry.description}</p>
                 </div>
@@ -166,6 +232,15 @@ function VersionPanel({ docId, collaborators, currentUser, connected, onClose })
             ))}
           </div>
         ))}
+
+        {state === "ready" && hasMore && (
+          <div style={{ padding: "10px 14px" }}>
+            <button onClick={loadOlder} disabled={loadingMore}
+              style={{ width: "100%", padding: "7px 10px", background: "none", border: `1px solid ${E.border}`, color: E.mutedFg, borderRadius: 6, fontSize: 11, cursor: loadingMore ? "default" : "pointer", fontFamily: E.font }}>
+              {loadingMore ? "Loading…" : "Load older changes"}
+            </button>
+          </div>
+        )}
       </div>
     </aside>
   );
@@ -427,6 +502,7 @@ export default function EditorPage() {
         {showHistory && (
           <VersionPanel
             docId={docId}
+            socket={socket}
             collaborators={collaborators}
             currentUser={currentUser}
             connected={connected}

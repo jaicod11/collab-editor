@@ -37,7 +37,6 @@ const redisService = require("../src/services/redisService");
 const snapshotService = require("../src/services/snapshotService");
 const Operation = require("../src/models/Operation");
 const Snapshot = require("../src/models/Snapshot");
-const { _describeOp: describeOp } = require("../src/controllers/historyController");
 const { transform } = require("../../shared/ot/operations.js");
 
 const DOC = new mongoose.Types.ObjectId();
@@ -198,31 +197,5 @@ describe("snapshotService.contentAtRevision", () => {
     await Operation.create({ docId: DOC, userId: USER, revision: 1, op: { type: "insert", pos: 0, text: "hi" } });
     await Operation.create({ docId: DOC, userId: USER, revision: 2, op: { type: "restore", toRevision: 1, length: 2 } });
     assert.equal(await snapshotService.contentAtRevision(DOC, 2), "hi");
-  });
-});
-
-describe("historyController.describeOp", () => {
-  test("describes a batch by the characters it actually removes", () => {
-    const batch = makeBatch();
-    const text = describeOp(batch);
-    assert.match(text, /Deleted 6 characters/);
-    assert.notEqual(text, "Document modified");
-  });
-
-  test("describes a noop without claiming an edit happened", () => {
-    assert.equal(describeOp({ type: "noop" }), "No change");
-  });
-
-  test("never renders a zero-length delete as an edit", () => {
-    assert.equal(describeOp({ type: "delete", pos: 0, len: 0 }), "No change");
-  });
-
-  test("describes a restore marker", () => {
-    assert.match(describeOp({ type: "restore", toRevision: 12 }), /Restored the document to revision 12/);
-  });
-
-  test("still describes plain inserts and deletes", () => {
-    assert.match(describeOp({ type: "insert", pos: 0, text: "hello" }), /Inserted "hello"/);
-    assert.match(describeOp({ type: "delete", pos: 0, len: 3 }), /Deleted 3 characters/);
   });
 });
