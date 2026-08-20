@@ -26,6 +26,31 @@ Instead of relying on heavy third-party synchronization libraries, CollabDocs im
 * 🚀 **Horizontally Scalable** — Uses Redis Pub/Sub to sync document state and operations across multiple Node.js server instances.
 * 🔒 **Secure Authentication** — JWT-based authentication for user registration and secure document access.
 
+### Deliberately plain text
+
+The editor handles **plain text only**. There is no bold, italic, heading, list
+or colour formatting, and this is a design decision rather than an omission.
+
+The OT engine in `shared/ot/` transforms operations over a flat string:
+`insert(pos, text)` and `delete(pos, len)`, with positions as character offsets.
+Rich text needs an *attributed* document model — formatting spans that are
+themselves transformed alongside the text, so that two people bolding
+overlapping ranges while a third deletes across them converge on the same
+result. That is a different operation type and a different transform, not a
+toolbar.
+
+An earlier version of the UI shipped formatting buttons that called
+`document.execCommand`, which writes HTML into the editable element. Because the
+sync layer reads and writes `textContent`, that formatting never entered the
+diff, never reached the server, and was destroyed the moment anyone else's edit
+rewrote the element. The buttons have been removed rather than left in place
+looking functional.
+
+Rich text is a future milestone and requires replacing the plain-string
+operation type with an attributed one (along the lines of a Quill delta or
+ProseMirror step), plus a matching transform and a storage format. It is not a
+change that can be made in the view layer.
+
 ---
 
 ## 🛠️ Tech Stack
