@@ -19,6 +19,7 @@
 
 const Document = require("../models/Document");
 const redisService = require("../services/redisService");
+const documentService = require("../services/documentService");
 
 // ── GET /api/documents ────────────────────────────────────────────────────────
 exports.list = async (req, res, next) => {
@@ -90,20 +91,16 @@ exports.getOne = async (req, res, next) => {
     const docId = req.params.id;
     const userId = req.user.id;
 
-    let doc = await redisService.getDocCache(docId);
-    if (!doc) {
-      doc = await Document.findById(docId)
-        .populate("owner", "name email")
-        .populate("collaborators", "name email")
-        .lean();
-      if (!doc) return res.status(404).json({ message: "Document not found" });
-      await redisService.setDocCache(docId, doc);
-    }
+    // Canonical loader — the single cached shape shared with the socket layer.
+    // This used to read and write doc:cache:{id} with its own populated shape
+    // while documentHandler wrote a raw one under the same key; whichever ran
+    // first won, and reading the other's entry made owner._id undefined and
+    // 403'd the document's own owner. See documentService.toCanonical().
+    const doc = await documentService.loadCanonical(docId);
+    if (!doc) return res.status(404).json({ message: "Document not found" });
 
-    const isOwner = doc.owner?._id?.toString() === userId || doc.owner?.toString() === userId;
-    const isCollab = (doc.collaborators ?? []).some(
-      (c) => c._id?.toString() === userId || c.toString() === userId
-    );
+    const isOwner = doc.owner?._id === userId;
+    const isCollab = (doc.collaborators ?? []).some((c) => c._id === userId);
     if (!isOwner && !isCollab) {
       return res.status(403).json({ message: "Access denied" });
     }

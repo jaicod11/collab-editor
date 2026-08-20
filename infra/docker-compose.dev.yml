@@ -1,0 +1,57 @@
+# infra/docker-compose.dev.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# LOCAL DEVELOPMENT STACK — MongoDB + Redis on localhost.
+#
+#   Start:  docker compose -f infra/docker-compose.dev.yml up -d
+#   Stop:   docker compose -f infra/docker-compose.dev.yml down
+#   Reset:  docker compose -f infra/docker-compose.dev.yml down -v
+#
+# Point the server at it with server/.env.local (see server/.env.local.example).
+# Nothing here should ever be used in production: Mongo runs without auth and
+# Redis without a password, both reachable only on 127.0.0.1.
+#
+# Ports are deliberately non-default so this stack cannot collide with — or be
+# mistaken for — a real deployment on the same machine.
+
+services:
+  mongo:
+    image: mongo:7.0
+    container_name: collab-dev-mongo
+    restart: unless-stopped
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "127.0.0.1:27018:27017"
+    volumes:
+      - dev-mongo-data:/data/db
+    healthcheck:
+      # Initiates the single-node replica set on first run, then reports healthy
+      # once the node is PRIMARY. Transactions and change streams need a replica
+      # set even for a single node.
+      test: >
+        mongosh --quiet --eval "
+          try { rs.status().ok } catch (e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'127.0.0.1:27017'}]}).ok }
+        "
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 10s
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: collab-dev-redis
+    restart: unless-stopped
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    ports:
+      - "127.0.0.1:6380:6379"
+    volumes:
+      - ./redis.dev.conf:/usr/local/etc/redis/redis.conf:ro
+      - dev-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  dev-mongo-data:
+  dev-redis-data:

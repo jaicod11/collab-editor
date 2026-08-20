@@ -43,7 +43,7 @@ function Field({ label, type = "text", placeholder, value, onChange, error, righ
   );
 }
 
-export function LoginForm({ onSuccess, onSwitchToRegister }) {
+export function LoginForm({ onSuccess: _onSuccess, onSwitchToRegister }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [errors, setErrors] = useState({});

@@ -285,7 +285,10 @@ function WorkspaceRow({ ws, onDelete }) {
 }
 
 // ─── ROOT: Sidebar ────────────────────────────────────────────────────────────
-export default function Sidebar({ activeTab, onNewDoc }) {
+// `onNewDoc` is accepted so existing call sites keep working, but the New
+// Document button navigates to /new instead of invoking it. Reconciling the two
+// belongs to the React phase.
+export default function Sidebar({ activeTab, onNewDoc: _onNewDoc }) {
     const navigate = useNavigate();
     const { toast } = useToast();
     const { workspaces, loading, loadWorkspaces, createWorkspace, deleteWorkspace } = useWorkspace();

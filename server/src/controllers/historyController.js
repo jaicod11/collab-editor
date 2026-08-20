@@ -7,9 +7,9 @@
 
 const Operation = require("../models/Operation");
 const Document = require("../models/Document");
-const otService = require("../services/otService");
 const redisService = require("../services/redisService");
 const documentService = require("../services/documentService");
+const snapshotService = require("../services/snapshotService");
 
 // ── GET /api/documents/:id/history ───────────────────────────────────────────
 exports.getHistory = async (req, res, next) => {
@@ -67,29 +67,31 @@ exports.restore = async (req, res, next) => {
       return res.status(400).json({ message: "Version does not belong to this document" });
     }
 
-    // Find nearest snapshot before the target revision
+    // Reconstruct from the nearest snapshot AT OR BEFORE the target, then
+    // replay forward. The old code always started from Document.snapshot — a
+    // single field holding the most RECENT snapshot — so whenever the snapshot
+    // was newer than the target (the common case) the replay range was empty
+    // and the caller silently received the snapshot's content while the
+    // endpoint reported "Document restored".
+    //
+    // contentAtRevision throws on an op that will not apply rather than
+    // skipping it, so a corrupt log surfaces as a 500 instead of a quietly
+    // wrong document.
     const doc = await Document.findById(docId).lean();
     if (!doc) return res.status(404).json({ message: "Document not found" });
 
-    const baseContent = doc.snapshot?.content ?? "";
-    const baseRevision = doc.snapshot?.revision ?? 0;
-
-    // Replay ops from snapshot to target revision
-    const ops = await Operation.find({
-      docId,
-      revision: { $gt: baseRevision, $lte: targetOp.revision },
-    }).sort({ revision: 1 }).lean();
-
-    let restoredContent = baseContent;
-    for (const op of ops) {
-      try {
-        restoredContent = otService.applyOp(restoredContent, op.op);
-      } catch {
-        // If a single op fails, skip it (corrupted op log edge case)
-      }
-    }
+    const restoredContent = await snapshotService.contentAtRevision(docId, targetOp.revision);
 
     const newRevision = doc.revision + 1;
+
+    // Record the restore so the op log has no gap at this revision.
+    await Operation.create({
+      docId,
+      userId: req.user.id,
+      revision: newRevision,
+      op: { type: "restore", toRevision: targetOp.revision, length: restoredContent.length },
+    });
+
     await Document.findByIdAndUpdate(docId, {
       content: restoredContent,
       revision: newRevision,
@@ -99,6 +101,7 @@ exports.restore = async (req, res, next) => {
     res.json({
       message: "Document restored",
       revision: newRevision,
+      restoredFromRevision: targetOp.revision,
       content: restoredContent,
     });
   } catch (err) {
@@ -107,6 +110,8 @@ exports.restore = async (req, res, next) => {
 };
 
 // ─── Helper ────────────────────────────────────────────────────────────────────
+// Exported for tests — history descriptions are user-visible text and the
+// batch/noop/restore branches are easy to regress silently.
 function describeOp(op) {
   if (!op) return "Unknown change";
 
@@ -134,5 +139,11 @@ function describeOp(op) {
 
   if (op.type === "noop") return "No change";
 
+  if (op.type === "restore") {
+    return `Restored the document to revision ${op.toRevision}`;
+  }
+
   return "Document modified";
 }
+
+exports._describeOp = describeOp;

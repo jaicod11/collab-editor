@@ -30,6 +30,7 @@ const otService = require("../../services/otService");
 const redisService = require("../../services/redisService");
 const snapshotService = require("../../services/snapshotService");
 const documentService = require("../../services/documentService");
+const lockService = require("../../services/lockService");
 
 module.exports = function documentHandler(io, socket, redisClient, CHANNEL_PREFIX) {
   const { user } = socket;
@@ -83,14 +84,10 @@ module.exports = function documentHandler(io, socket, redisClient, CHANNEL_PREFI
       const rooms = require("../rooms");
       rooms.join(docId, { userId: user.id, name: user.name, socketId: socket.id });
 
-      // Load document (try Redis cache first)
-      let doc = await redisService.getDocCache(docId);
+      // Canonical loader — one cached shape shared with the REST layer.
+      const doc = await documentService.loadCanonical(docId);
       if (!doc) {
-        doc = await Document.findById(docId).lean();
-        if (!doc) {
-          return socket.emit("doc:error", { message: "Document not found" });
-        }
-        await redisService.setDocCache(docId, doc);
+        return socket.emit("doc:error", { code: "NOT_FOUND", message: "Document not found" });
       }
 
       // Send initial document state to this socket only
@@ -118,6 +115,13 @@ module.exports = function documentHandler(io, socket, redisClient, CHANNEL_PREFI
   socket.on("doc:leave", ({ docId }) => {
     if (!docId) return;
     grantedDocs.delete(docId); // room membership ended — drop the cached grant
+
+    // Also drop the in-memory room entry. Only `disconnecting` used to do this,
+    // so navigating between documents left a ghost member behind for the rest
+    // of the process lifetime, inflating getMembers()/getUserCount().
+    const rooms = require("../rooms");
+    rooms.leave(docId, socket.id);
+
     socket.leave(`doc:${docId}`);
     socket.to(`doc:${docId}`).emit("presence:leave", { userId: user.id });
   });
@@ -133,135 +137,132 @@ module.exports = function documentHandler(io, socket, redisClient, CHANNEL_PREFI
   socket.on("op:submit", async ({ docId, op, revision: clientRevision }) => {
     if (!docId || !op) return;
 
-    const lockKey = `lock:doc:${docId}`;
-
     try {
-      // ── 0a. Authorization — BEFORE taking the lock ──────────────────────
+      // ── Authorization — before taking the lock ──────────────────────────
       if (!(await ensureAccess(docId))) return;
 
-      // ── 0b. Validate op shape — BEFORE taking the lock ──────────────────
-      // Rejects malformed indices that String.slice would otherwise accept
-      // and silently corrupt the document with.
+      // ── Validate op shape — before taking the lock ──────────────────────
+      // Rejects malformed indices that String.slice would otherwise accept and
+      // silently corrupt the document with.
       if (!otService.validateOp(op)) {
-        return socket.emit("doc:error", { message: "Invalid operation" });
-      }
-
-      // ── 1. Acquire optimistic lock (100ms TTL) ──────────────────────────
-      const acquired = await redisClient.set(lockKey, socket.id, {
-        NX: true,
-        PX: 100,
-      });
-      // If lock not acquired, retry once after 10ms
-      if (!acquired) {
-        await new Promise((r) => setTimeout(r, 10));
-        const retry = await redisClient.set(lockKey, socket.id, { NX: true, PX: 100 });
-        if (!retry) {
-          return socket.emit("doc:error", { message: "Server busy, please retry" });
-        }
-      }
-
-      // ── 2. Load current doc state ─────────────────────────────────────
-      let doc = await redisService.getDocCache(docId);
-      if (!doc) {
-        doc = await Document.findById(docId).lean();
-        if (!doc) return socket.emit("doc:error", { message: "Document not found" });
-      }
-
-      const serverRevision = doc.revision;
-
-      // ── 3. Fetch ops between clientRevision and serverRevision ──────────
-      let missedOps = [];
-      if (clientRevision < serverRevision) {
-        // Try Redis op cache first (fast path)
-        missedOps = await redisService.getOpsRange(docId, clientRevision, serverRevision);
-
-        if (missedOps.length === 0 && clientRevision < serverRevision) {
-          // Fallback to MongoDB op log
-          const dbOps = await Operation.find({
-            docId,
-            revision: { $gt: clientRevision, $lte: serverRevision },
-          })
-            .sort({ revision: 1 })
-            .lean();
-          missedOps = dbOps.map((o) => o.op);
-        }
-      }
-
-      // ── 4. Transform op against missed ops ───────────────────────────
-      // `op.site` rides along and is preserved by every transform — it is the
-      // deterministic insert/insert tie-break, so it must survive into the op
-      // log for later catch-up transforms to agree with the live clients.
-      const transformedOp = otService.transformAgainst(op, missedOps);
-
-      // Concurrent edits can cancel this op out entirely (e.g. the characters
-      // it deleted were already deleted by someone else). There is nothing to
-      // apply, persist or broadcast — but the client is still waiting, so ack
-      // at the unchanged revision to clear its pending state. Previously this
-      // was a {type:"delete", len:0} sentinel that got written to the op log
-      // and rendered as "Deleted 0 characters" in version history.
-      if (otService.isNoop(transformedOp)) {
-        await redisClient.del(lockKey);
-        return socket.emit("op:ack", {
-          revision: serverRevision,
-          op: { type: "noop" },
+        return socket.emit("doc:error", {
+          code: "INVALID_OP",
+          message: "Invalid operation",
         });
       }
 
-      // ── 5. Apply to document content ──────────────────────────────────
-      const newContent = otService.applyOp(doc.content ?? "", transformedOp);
-      const newRevision = serverRevision + 1;
+      // ── Critical section ───────────────────────────────────────────────
+      // Everything that reads-then-writes the document runs under the lock,
+      // and the lock is released in lockService's `finally` — an early return
+      // in here can no longer leak it, which the old inline version did.
+      //
+      // Submissions to the same document QUEUE rather than racing: the old
+      // code gave up after one 10ms retry and told the client "Server busy",
+      // which the client ignored, losing the op while the editor still showed
+      // the text. Two simultaneous submissions were enough to trigger that.
+      const outcome = await lockService.withDocumentLock(redisClient, docId, async () => {
+        const doc = await documentService.loadCanonical(docId);
+        if (!doc) return { kind: "missing" };
 
-      // ── 6. Persist op to MongoDB (async, non-blocking) ────────────────
-      const opRecord = new Operation({
-        docId,
-        userId: user.id,
-        revision: newRevision,
-        op: transformedOp,
-        site: typeof transformedOp.site === "string" ? transformedOp.site : undefined,
-      });
-      opRecord.save().catch((e) => console.error("[Op persist]", e));
+        const serverRevision = doc.revision;
 
-      // ── 7. Update document in MongoDB (async) ────────────────────────
-      // NOTE: this deliberately does NOT add the editor to `collaborators`.
-      // Membership is never granted as a side effect of editing — access is
-      // enforced up front by ensureAccess() above, so anyone reaching this
-      // line is already the owner or an existing collaborator.
-      Document.findByIdAndUpdate(docId, {
-        content: newContent,
-        revision: newRevision,
-      }).catch((e) => console.error("[Doc update]", e));
+        // ── Ops applied since the client's revision ────────────────────
+        let missedOps = [];
+        if (clientRevision < serverRevision) {
+          missedOps = await redisService.getOpsRange(docId, clientRevision, serverRevision);
 
-      // ── 8. Update Redis cache ─────────────────────────────────────────
-      const updatedDoc = { ...doc, content: newContent, revision: newRevision };
-      await redisService.setDocCache(docId, updatedDoc);
-      await redisService.pushOp(docId, transformedOp, newRevision);
+          if (missedOps.length === 0) {
+            // Redis could not cover the range — fall back to the durable log.
+            const dbOps = await Operation.find({
+              docId,
+              revision: { $gt: clientRevision, $lte: serverRevision },
+            })
+              .sort({ revision: 1 })
+              .lean();
+            missedOps = dbOps.map((o) => o.op);
+          }
+        }
 
-      // ── 9. Release lock ───────────────────────────────────────────────
-      await redisClient.del(lockKey);
+        // ── Transform ──────────────────────────────────────────────────
+        // `op.site` rides along and is preserved by every transform — it is
+        // the deterministic insert/insert tie-break, so it must survive into
+        // the op log for later catch-up transforms to agree with live clients.
+        const transformedOp = otService.transformAgainst(op, missedOps);
 
-      // ── 10. ACK to submitting client ──────────────────────────────────
-      socket.emit("op:ack", { revision: newRevision, op: transformedOp });
+        // Concurrent edits can cancel this op out entirely. Nothing to apply,
+        // persist or broadcast — but the client is still waiting, so ack at the
+        // unchanged revision to clear its pending state.
+        if (otService.isNoop(transformedOp)) {
+          return { kind: "noop", revision: serverRevision };
+        }
 
-      // ── 11. Publish to Redis → other nodes forward to their rooms ─────
-      await redisClient.publish(
-        `${CHANNEL_PREFIX}${docId}`,
-        JSON.stringify({
-          op: transformedOp,
-          revision: newRevision,
+        const newContent = otService.applyOp(doc.content ?? "", transformedOp);
+        const newRevision = serverRevision + 1;
+
+        // ── Persist, AWAITED inside the lock ───────────────────────────
+        // These used to be fire-and-forget. The lock was released before they
+        // landed, so the next op could read a stale document on a cache miss
+        // and reuse a revision number.
+        await Operation.create({
+          docId,
           userId: user.id,
-          _socketId: socket.id, // excluded from broadcast on receiving end
-        })
-      );
+          revision: newRevision,
+          op: transformedOp,
+          site: typeof transformedOp.site === "string" ? transformedOp.site : undefined,
+        });
 
-      // ── 12. Periodic snapshot (every 50 revisions) ────────────────────
-      if (newRevision % 50 === 0) {
-        snapshotService.save(docId, newContent, newRevision).catch(console.error);
+        // NOTE: deliberately does NOT add the editor to `collaborators`.
+        // Membership is never granted as a side effect of editing.
+        await Document.findByIdAndUpdate(docId, {
+          content: newContent,
+          revision: newRevision,
+        });
+
+        await redisService.setDocCache(docId, { ...doc, content: newContent, revision: newRevision });
+        await redisService.pushOp(docId, transformedOp, newRevision);
+
+        // ── Ack and broadcast, still inside the lock ───────────────────
+        // Ordering matters: two ops processed back to back must reach other
+        // clients in revision order, or their transforms are applied against
+        // the wrong base. Publishing after release allows them to interleave.
+        socket.emit("op:ack", { revision: newRevision, op: transformedOp });
+
+        await redisClient.publish(
+          `${CHANNEL_PREFIX}${docId}`,
+          JSON.stringify({
+            op: transformedOp,
+            revision: newRevision,
+            userId: user.id,
+            _socketId: socket.id, // excluded from broadcast on the receiving end
+          })
+        );
+
+        return { kind: "applied", revision: newRevision, content: newContent };
+      });
+
+      if (outcome.kind === "missing") {
+        return socket.emit("doc:error", { code: "NOT_FOUND", message: "Document not found" });
+      }
+      if (outcome.kind === "noop") {
+        return socket.emit("op:ack", { revision: outcome.revision, op: { type: "noop" } });
       }
 
+      // ── Periodic snapshot, outside the lock ────────────────────────────
+      if (outcome.revision % snapshotService.SNAPSHOT_EVERY === 0) {
+        snapshotService
+          .save(docId, outcome.content, outcome.revision)
+          .catch((e) => console.error("[Snapshot]", e));
+      }
     } catch (err) {
-      await redisClient.del(lockKey).catch(() => { });
+      if (err instanceof lockService.LockTimeoutError) {
+        console.error(`[documentHandler] lock timeout doc=${docId}`);
+        return socket.emit("doc:error", {
+          code: "LOCK_TIMEOUT",
+          message: "Document is busy, resynchronising",
+        });
+      }
       console.error("[documentHandler] op:submit error:", err);
-      socket.emit("doc:error", { message: "Operation failed" });
+      socket.emit("doc:error", { code: "OP_FAILED", message: "Operation failed" });
     }
   });
 
@@ -273,38 +274,68 @@ module.exports = function documentHandler(io, socket, redisClient, CHANNEL_PREFI
       // ── Authorization — BEFORE reading or rewriting any content ─────────
       if (!(await ensureAccess(docId))) return;
 
-      const op = await Operation.findById(versionId).lean();
-      if (!op) return socket.emit("doc:error", { message: "Version not found" });
+      const outcome = await lockService.withDocumentLock(redisClient, docId, async () => {
+        const target = await Operation.findById(versionId).lean();
+        if (!target) return { kind: "no-version" };
+        if (target.docId?.toString() !== docId) return { kind: "wrong-doc" };
 
-      // Replay ops from snapshot up to target revision
-      const snapshot = await Document.findById(docId).select("snapshot").lean();
-      const baseContent = snapshot?.snapshot?.content ?? "";
-      const baseRevision = snapshot?.snapshot?.revision ?? 0;
+        const doc = await documentService.loadCanonical(docId);
+        if (!doc) return { kind: "missing" };
 
-      const ops = await Operation.find({
-        docId,
-        revision: { $gt: baseRevision, $lte: op.revision },
-      }).sort({ revision: 1 }).lean();
+        // Replays from the nearest snapshot AT OR BEFORE the target revision.
+        // The old code always used Document.snapshot — a single field holding
+        // the MOST RECENT snapshot — so when the snapshot was newer than the
+        // target (the common case) the replay range was empty and the user
+        // silently got the snapshot's content instead of the version asked for.
+        const content = await snapshotService.contentAtRevision(docId, target.revision);
 
-      let content = baseContent;
-      for (const o of ops) {
-        content = otService.applyOp(content, o.op);
-      }
+        const newRevision = doc.revision + 1;
 
-      const newRevision = (await Document.findById(docId).select("revision").lean()).revision + 1;
-      await Document.findByIdAndUpdate(docId, { content, revision: newRevision });
-      await redisService.setDocCache(docId, { content, revision: newRevision });
+        // A restore is a real edit: record it so the op log has no gap and
+        // clients catching up over this revision see something coherent.
+        await Operation.create({
+          docId,
+          userId: user.id,
+          revision: newRevision,
+          op: { type: "restore", toRevision: target.revision, length: content.length },
+        });
 
-      // Broadcast full restore to all room members
-      io.to(`doc:${docId}`).emit("doc:load", {
-        content,
-        revision: newRevision,
-        title: "Restored version",
+        await Document.findByIdAndUpdate(docId, { content, revision: newRevision });
+
+        // Canonical shape — the old code cached { content, revision } only,
+        // which erased owner/collaborators and made getOne() 403 the owner out
+        // of their own document until the cache TTL expired.
+        await redisService.setDocCache(docId, { ...doc, content, revision: newRevision });
+
+        // Broadcast the document's REAL title. The old code sent the literal
+        // string "Restored version", overwriting the name in every open editor.
+        io.to(`doc:${docId}`).emit("doc:load", {
+          content,
+          revision: newRevision,
+          title: doc.title,
+        });
+
+        return { kind: "restored", revision: newRevision };
       });
 
+      if (outcome.kind === "no-version") {
+        return socket.emit("doc:error", { code: "NOT_FOUND", message: "Version not found" });
+      }
+      if (outcome.kind === "wrong-doc") {
+        return socket.emit("doc:error", {
+          code: "INVALID_VERSION",
+          message: "Version does not belong to this document",
+        });
+      }
+      if (outcome.kind === "missing") {
+        return socket.emit("doc:error", { code: "NOT_FOUND", message: "Document not found" });
+      }
     } catch (err) {
+      if (err instanceof lockService.LockTimeoutError) {
+        return socket.emit("doc:error", { code: "LOCK_TIMEOUT", message: "Document is busy" });
+      }
       console.error("[documentHandler] doc:restore error:", err);
-      socket.emit("doc:error", { message: "Restore failed" });
+      socket.emit("doc:error", { code: "RESTORE_FAILED", message: "Restore failed" });
     }
   });
 };

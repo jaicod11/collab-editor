@@ -37,7 +37,9 @@ const EditorCore = forwardRef(function EditorCore(
   {
     docId,
     socket,
-    connected,
+    // Accepted for API compatibility but unused: connection state is rendered
+    // by EditorPage's status bar, not here.
+    connected: _connected,
     currentUser,
     initialContent = "",
     onContentChange,

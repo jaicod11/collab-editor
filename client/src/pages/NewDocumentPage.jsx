@@ -135,7 +135,6 @@ const TEMPLATES = [
 function TemplateCard({ template, selected, onClick }) {
     const [hov, setHov] = useState(false);
     const cat = CAT[template.category] ?? CAT.General;
-    const active = selected || hov;
 
     return (
         <button

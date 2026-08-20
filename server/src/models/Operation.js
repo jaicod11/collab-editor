@@ -29,7 +29,9 @@ const operationSchema = new mongoose.Schema(
             type: mongoose.Schema.Types.ObjectId,
             ref: "Document",
             required: true,
-            index: true,
+            // No single-field index here: the compound { docId, revision }
+            // below already serves docId-only queries via its prefix. Declaring
+            // both created a second index that cost writes and served nothing.
         },
         userId: {
             type: mongoose.Schema.Types.ObjectId,
@@ -75,11 +77,24 @@ const operationSchema = new mongoose.Schema(
 // "Give me all ops for doc X between revisions 42 and 55"
 operationSchema.index({ docId: 1, revision: 1 });
 
-// ── TTL index: auto-delete ops older than 90 days (optional, saves disk) ──────
-// Comment out if you need infinite history.
-operationSchema.index(
-    { appliedAt: 1 },
-    { expireAfterSeconds: 60 * 60 * 24 * 90 }  // 90 days
-);
+// ── NO TTL INDEX — deliberately ──────────────────────────────────────────────
+//
+// There used to be `index({ appliedAt: 1 }, { expireAfterSeconds: 90 days })`.
+// This collection is the sole backing store for three things:
+//   - getHistory (version history)
+//   - restore's replay, via snapshotService.contentAtRevision
+//   - op:submit's catch-up path when the Redis op cache misses
+// At 90 days MongoDB silently deleted those rows: history emptied itself,
+// restore reconstructed from an incomplete log, and a client that fell behind
+// got a transform against ops that no longer existed. Nothing surfaced an
+// error; the documents just quietly became wrong.
+//
+// If op-log growth becomes a problem, the retention strategy has to be built on
+// snapshots rather than on time. Snapshots are now their own collection
+// (models/Snapshot.js), so ops BELOW the oldest snapshot a product decision
+// still wants reachable are genuinely redundant — the snapshot reconstructs
+// that point directly. A safe policy is therefore "keep every snapshot; delete
+// ops older than the Nth-oldest retained snapshot", applied as an explicit,
+// logged, auditable job — not a TTL that deletes rows nobody is watching.
 
 module.exports = mongoose.model("Operation", operationSchema);

@@ -3,7 +3,9 @@
   "private": true,
   "description": "Real-time collaborative document editor — monorepo root",
   "scripts": {
-    "test": "npm --prefix shared test"
+    "test": "npm --prefix shared test && npm --prefix server test",
+    "test:ot": "npm --prefix shared test",
+    "test:persistence": "npm --prefix server test"
   },
   "dependencies": {
     "redis": "^5.12.1"

@@ -63,7 +63,7 @@ const MOCK_HISTORY = [
 ];
 
 // ─── Single timeline entry ────────────────────────────────────────────────────
-function TimelineEntry({ version, index, isSelected, onSelect, onRestore, restoring }) {
+function TimelineEntry({ version, index, isSelected, onSelect, onRestore }) {
   const [hovered, setHovered] = useState(false);
 
   return (

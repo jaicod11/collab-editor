@@ -175,9 +175,39 @@ export function useOT({ socket, docId, editorRef }) {
       applyToEditor(apply);
     };
 
+    // ── Recovery ────────────────────────────────────────────────────────
+    // A submitted op that the server could not apply used to be dropped in
+    // silence: the editor already showed the text, so the client and server
+    // diverged permanently with nothing on screen to indicate it.
+    //
+    // RESYNC rather than retry-with-backoff. A retry would have to re-transform
+    // the failed op against everything that landed while it was failing, and
+    // the client cannot know what that was — the op it holds is expressed
+    // against a document state the server never accepted. Re-joining asks the
+    // server for authoritative content and revision, which is unconditionally
+    // correct and costs one document-sized payload.
+    //
+    // The trade-off is that un-acked local edits are discarded. That is the
+    // right way round: losing the last few keystrokes is recoverable by the
+    // person typing, whereas silent divergence is not recoverable at all. With
+    // op:submit now queueing instead of failing fast, this should be a genuine
+    // error path rather than something users hit while typing.
+    const RESYNC_CODES = new Set(["OP_FAILED", "LOCK_TIMEOUT", "INVALID_OP"]);
+
+    const onDocError = ({ code }) => {
+      if (!RESYNC_CODES.has(code)) return; // ACCESS_DENIED / NOT_FOUND: nothing to resync
+      console.warn(`[useOT] ${code} — resynchronising from the server`);
+      syncRef.current = createSyncState();
+      socket.emit("doc:join", { docId });
+    };
+
     // Initial document load
     const onDocLoad = ({ content: docContent, revision: rev }) => {
       const text = docContent ?? "";
+      // Authoritative state: drop anything still pending or buffered locally,
+      // otherwise a resync would replay ops against a document that no longer
+      // matches the one they were diffed against.
+      syncRef.current = createSyncState();
       revisionRef.current = rev;
       prevContentRef.current = text;
       setContent(text);
@@ -193,13 +223,15 @@ export function useOT({ socket, docId, editorRef }) {
     socket.on("op:ack", onAck);
     socket.on("op:broadcast", onBroadcast);
     socket.on("doc:load", onDocLoad);
+    socket.on("doc:error", onDocError);
 
     return () => {
       socket.off("op:ack", onAck);
       socket.off("op:broadcast", onBroadcast);
       socket.off("doc:load", onDocLoad);
+      socket.off("doc:error", onDocError);
     };
-  }, [socket, applyToEditor, sendOp, editorRef]);
+  }, [socket, applyToEditor, sendOp, editorRef, docId]);
 
   return { submitOp, handleEditorInput, content, revision };
 }

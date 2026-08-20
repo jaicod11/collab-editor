@@ -20,7 +20,7 @@
 // import * as Y          from "yjs";
 // import { WebsocketProvider } from "y-websocket";
 
-const WS_URL = import.meta.env.VITE_WS_URL ?? "ws://localhost:4000";
+// const WS_URL = import.meta.env.VITE_WS_URL ?? "ws://localhost:4000";
 
 /**
  * createYjsDoc(docId)
@@ -29,7 +29,7 @@ const WS_URL = import.meta.env.VITE_WS_URL ?? "ws://localhost:4000";
  * @param {string} docId
  * @returns {{ ydoc, provider, yText }}
  */
-export function createYjsDoc(docId) {
+export function createYjsDoc(_docId) {
   // Uncomment when yjs is installed:
   //
   // const ydoc    = new Y.Doc();
@@ -56,7 +56,7 @@ export function createYjsDoc(docId) {
  * Cleanly disconnects the provider and destroys the Yjs document.
  * Call this in a useEffect cleanup.
  */
-export function destroyYjsDoc({ ydoc, provider }) {
+export function destroyYjsDoc({ ydoc: _ydoc, provider: _provider }) {
   // provider?.destroy();
   // ydoc?.destroy();
 }

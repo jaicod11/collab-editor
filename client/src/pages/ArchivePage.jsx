@@ -27,7 +27,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "../components/UI/Toast";
-import { useAuthStore } from "../store/authSlice";
 import Sidebar, { T, Icons } from "../components/Layout/Sidebar";
 import PortalMenu from "../components/UI/PortalMenu";
 import api from "../services/api";
@@ -246,8 +245,6 @@ function ArchiveRow({ doc, index, onOpen, onRestore, onDelete }) {
 export default function ArchivePage() {
     const navigate = useNavigate();
     const { toast } = useToast();
-    const user = useAuthStore((s) => s.user);
-    const logout = useAuthStore((s) => s.logout);
 
     const [documents, setDocuments] = useState([]);
     const [loading, setLoading] = useState(false);

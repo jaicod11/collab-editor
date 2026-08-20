@@ -13,11 +13,11 @@
  * feels native to the rest of the app rather than a bolted-on afterthought.
  */
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuthStore } from "../store/authSlice";
 import { useToast } from "../components/UI/Toast";
-import { T, Icons } from "../components/Layout/Sidebar";
+import { T } from "../components/Layout/Sidebar";
 import api from "../services/api";
 
 // ─── Section nav ──────────────────────────────────────────────────────────────

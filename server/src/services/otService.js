@@ -12,7 +12,7 @@
 // v22.12 (see server/package.json engines). There is exactly one copy of this
 // algorithm — do not re-implement it here or on the client.
 const {
-  applyOp, applyOps, transform, transformAgainst, compose, isNoop, normalize,
+  applyOp, applyOps, transformAgainst, compose, isNoop, normalize,
 } = require("../../../shared/ot/operations.js");
 
 module.exports = {

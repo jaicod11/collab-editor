@@ -43,6 +43,91 @@ async function assertAccess(docId, userId) {
     return doc;
 }
 
+// ─── Canonical cached document shape ─────────────────────────────────────────
+//
+// EVERY writer of `doc:cache:{docId}` must produce exactly this shape:
+//
+//   {
+//     _id:           string,
+//     title:         string,
+//     content:       string,
+//     revision:      number,
+//     status:        "Active" | "Archived" | "Deleted",
+//     owner:         { _id, name, email },
+//     collaborators: [ { _id, name, email } ],
+//     createdAt, updatedAt
+//   }
+//
+// Before this existed there were two shapes under the same key. The socket
+// handler cached `Document.findById().lean()` (raw ObjectIds) while the REST
+// controller cached the populated version ({name,email} objects); whichever ran
+// first won. Two things broke as a result:
+//   - getOne read a socket-written entry, found `owner._id` undefined, and
+//     returned 403 to the document's own owner;
+//   - the client's ownerName() helper rendered a raw ObjectId as a person's
+//     name, because `typeof o === "object"` was false for a plain id string.
+//
+// A restore path made it worse by caching only { content, revision }, dropping
+// owner and collaborators entirely.
+//
+// Use loadCanonical() to read and toCanonical() to normalise. Do not call
+// redisService.setDocCache() with anything else.
+
+/** Normalise a Mongo document (populated or not) into the canonical shape. */
+function toCanonical(doc) {
+    if (!doc) return null;
+
+    const person = (value) => {
+        if (!value) return null;
+        // Populated: a subdocument. Unpopulated: an ObjectId or its string form.
+        if (typeof value === "object" && (value.name !== undefined || value.email !== undefined)) {
+            return {
+                _id: value._id?.toString() ?? String(value._id ?? ""),
+                name: value.name ?? null,
+                email: value.email ?? null,
+            };
+        }
+        return { _id: value.toString(), name: null, email: null };
+    };
+
+    return {
+        _id: doc._id?.toString() ?? String(doc._id ?? ""),
+        title: doc.title ?? "Untitled Document",
+        content: doc.content ?? "",
+        revision: doc.revision ?? 0,
+        status: doc.status ?? "Active",
+        owner: person(doc.owner),
+        collaborators: (doc.collaborators ?? []).map(person).filter(Boolean),
+        createdAt: doc.createdAt ?? null,
+        updatedAt: doc.updatedAt ?? null,
+    };
+}
+
+/**
+ * Read a document in the canonical shape, using the cache when it is warm.
+ * Populates on a miss so the cached entry always carries owner/collaborator
+ * names — the shape the REST layer and the client both expect.
+ *
+ * Performs NO access check: callers do that (assertAccess, or the socket
+ * handler's ensureAccess).
+ *
+ * @returns {Promise<object|null>} canonical document, or null if missing
+ */
+async function loadCanonical(docId) {
+    const cached = await redisService.getDocCache(docId);
+    if (cached) return cached;
+
+    const doc = await Document.findById(docId)
+        .populate("owner", "name email")
+        .populate("collaborators", "name email")
+        .lean();
+    if (!doc) return null;
+
+    const canonical = toCanonical(doc);
+    await redisService.setDocCache(docId, canonical);
+    return canonical;
+}
+
 // ─── CRUD ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -64,27 +149,18 @@ async function createDocument(userId, { title = "Untitled Document" } = {}) {
  * Throws 404 if not found, 403 if user has no access.
  */
 async function getDocument(docId, userId) {
-    // Try Redis cache first
-    let doc = await redisService.getDocCache(docId);
+    // Reads through loadCanonical so this cannot write a second cached shape —
+    // it previously cached its own populated form under the same key the socket
+    // handler wrote a raw form to.
+    const doc = await loadCanonical(docId);
     if (!doc) {
-        doc = await Document
-            .findById(docId)
-            .populate("owner", "name email")
-            .populate("collaborators", "name email")
-            .lean();
-        if (!doc) {
-            const err = new Error("Document not found");
-            err.statusCode = 404;
-            throw err;
-        }
-        await redisService.setDocCache(docId, doc);
+        const err = new Error("Document not found");
+        err.statusCode = 404;
+        throw err;
     }
 
-    // Access check
-    const ownerId = doc.owner?._id?.toString() ?? doc.owner?.toString();
-    const collabIds = (doc.collaborators ?? []).map((c) => c._id?.toString() ?? c.toString());
-
-    if (userId && ownerId !== userId && !collabIds.includes(userId)) {
+    const collabIds = (doc.collaborators ?? []).map((c) => c._id);
+    if (userId && doc.owner?._id !== userId && !collabIds.includes(userId)) {
         const err = new Error("Access denied");
         err.statusCode = 403;
         throw err;
@@ -178,7 +254,7 @@ async function addCollaborator(docId, userId) {
  * Uses findByIdAndUpdate so this is safe under concurrent writes
  * (the Redis lock in documentHandler is the real guard; this is the persist step).
  */
-async function saveContent(docId, content, revision) {
+function saveContent(docId, content, revision) {
     return Document.findByIdAndUpdate(
         docId,
         { content, revision },
@@ -190,7 +266,7 @@ async function saveContent(docId, content, revision) {
  * Get just the op log for a document between two revisions.
  * Used by historyController and documentHandler catch-up.
  */
-async function getOpsBetween(docId, fromRevision, toRevision) {
+function getOpsBetween(docId, fromRevision, toRevision) {
     return Operation.find({
         docId,
         revision: { $gt: fromRevision, $lte: toRevision },
@@ -201,6 +277,8 @@ async function getOpsBetween(docId, fromRevision, toRevision) {
 
 module.exports = {
     assertAccess,
+    toCanonical,
+    loadCanonical,
     createDocument,
     getDocument,
     listDocuments,

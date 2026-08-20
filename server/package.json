@@ -7,7 +7,8 @@
     "start":   "node src/index.js",
     "dev":     "nodemon src/index.js",
     "lint":    "eslint src/",
-    "test":    "npm --prefix ../shared test"
+    "test":    "node --test test/*.test.js",
+    "sync-indexes": "node scripts/sync-indexes.js"
   },
   "dependencies": {
     "bcryptjs":           "^2.4.3",

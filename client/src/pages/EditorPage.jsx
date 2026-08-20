@@ -177,7 +177,8 @@ export default function EditorPage() {
   const [collaborators, setCollaborators] = useState([]);
   const [wordCount, setWordCount] = useState(0);
   const [charCount, setCharCount] = useState(0);
-  const [revision, setRevision] = useState(0);
+  // Tracked so EditorCore has somewhere to report to; not rendered anywhere yet.
+  const [, setRevision] = useState(0);
 
   const editorCoreRef = useRef(null);
   const saveTimer = useRef(null);

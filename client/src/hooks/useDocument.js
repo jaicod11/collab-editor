@@ -8,7 +8,7 @@
  * actual document body was blank.
  */
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback } from "react";
 import { useDocumentStore } from "../store/documentSlice";
 import api from "../services/api";
 

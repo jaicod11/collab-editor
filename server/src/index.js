@@ -3,7 +3,11 @@
  * Added workspace routes mount. Everything else is unchanged from before.
  */
 
+// .env holds the shared/production values; .env.local (gitignored) overrides
+// them for local development against infra/docker-compose.dev.yml. Loading in
+// this order means a developer never has to edit .env to point at localhost.
 require("dotenv").config();
+require("dotenv").config({ path: `${__dirname}/../.env.local`, override: true });
 require("./config/env");
 const express = require("express");
 const http = require("http");
