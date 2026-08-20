@@ -17,11 +17,32 @@ const redisService = require("./redisService");
 
 // ─── Access control ───────────────────────────────────────────────────────────
 
+const { ROLES, WRITE_ROLES } = Document;
+
+/** The caller's role on a document, or null when they have none. */
+function roleOf(doc, userId) {
+    if (!doc || !userId) return null;
+    if ((doc.owner?._id ?? doc.owner)?.toString() === userId) return ROLES.OWNER;
+    const entry = (doc.collaborators ?? []).find(
+        (c) => (c.user?._id ?? c.user)?.toString() === userId
+    );
+    return entry ? (entry.role ?? ROLES.EDITOR) : null;
+}
+
+/** True when `role` may change document content. */
+function canWrite(role) {
+    return WRITE_ROLES.includes(role);
+}
+
 /**
- * Verify a user can read/write a document.
- * Owners and collaborators both have full access.
- * @returns {object} the document if access is granted
- * @throws  {Error}  with statusCode 403 or 404 if not
+ * Verify a user can READ a document, and report what they may do.
+ *
+ * Returns the role rather than just the document so callers can distinguish
+ * read from write access — a viewer passes this check but must not be allowed
+ * to submit ops. Callers that mutate content must test the returned role.
+ *
+ * @returns {Promise<{ doc: object, role: "owner"|"editor"|"viewer" }>}
+ * @throws  {Error} statusCode 404 when missing, 403 when the user has no role
  */
 async function assertAccess(docId, userId) {
     const doc = await Document.findById(docId).lean();
@@ -31,15 +52,51 @@ async function assertAccess(docId, userId) {
         throw err;
     }
 
-    const ownerId = doc.owner?.toString();
-    const collabIds = (doc.collaborators ?? []).map((c) => c.toString());
-
-    if (ownerId !== userId && !collabIds.includes(userId)) {
+    const role = roleOf(doc, userId);
+    if (!role) {
         const err = new Error("Access denied");
         err.statusCode = 403;
         throw err;
     }
 
+    return { doc, role };
+}
+
+/**
+ * Verify the caller may modify document CONTENT.
+ * @throws {Error} statusCode 403 for viewers, with code VIEWER_READONLY
+ */
+async function assertWriteAccess(docId, userId) {
+    const { doc, role } = await assertAccess(docId, userId);
+    if (!canWrite(role)) {
+        const err = new Error("Read-only access");
+        err.statusCode = 403;
+        err.code = "VIEWER_READONLY";
+        throw err;
+    }
+    return { doc, role };
+}
+
+/**
+ * Verify the caller OWNS the document. Used by every share/collaborator
+ * management endpoint — an existing collaborator, of any role, is not enough.
+ * @throws {Error} statusCode 404 when missing, 403 when not the owner
+ */
+async function assertOwner(docId, userId) {
+    const doc = await Document.findById(docId).lean();
+    if (!doc) {
+        const err = new Error("Document not found");
+        err.statusCode = 404;
+        throw err;
+    }
+    if (roleOf(doc, userId) !== ROLES.OWNER) {
+        // Deliberately the same message a non-collaborator gets: whether a
+        // document exists and who owns it is not something a collaborator
+        // needs confirmed by probing owner-only routes.
+        const err = new Error("Access denied");
+        err.statusCode = 403;
+        throw err;
+    }
     return doc;
 }
 
@@ -54,7 +111,7 @@ async function assertAccess(docId, userId) {
 //     revision:      number,
 //     status:        "Active" | "Archived" | "Deleted",
 //     owner:         { _id, name, email },
-//     collaborators: [ { _id, name, email } ],
+//     collaborators: [ { _id, name, email, role } ],
 //     createdAt, updatedAt
 //   }
 //
@@ -97,7 +154,17 @@ function toCanonical(doc) {
         revision: doc.revision ?? 0,
         status: doc.status ?? "Active",
         owner: person(doc.owner),
-        collaborators: (doc.collaborators ?? []).map(person).filter(Boolean),
+        collaborators: (doc.collaborators ?? [])
+            .map((c) => {
+                const who = person(c.user ?? c);
+                return who ? { ...who, role: c.role ?? "editor" } : null;
+            })
+            .filter(Boolean),
+        // Never cache the share token: the cached document is served to every
+        // collaborator by getOne, and the token is owner-only.
+        shareEnabled: Boolean(doc.shareEnabled),
+        statusChangedBy: doc.statusChangedBy ? person(doc.statusChangedBy) : null,
+        statusChangedAt: doc.statusChangedAt ?? null,
         createdAt: doc.createdAt ?? null,
         updatedAt: doc.updatedAt ?? null,
     };
@@ -119,7 +186,8 @@ async function loadCanonical(docId) {
 
     const doc = await Document.findById(docId)
         .populate("owner", "name email")
-        .populate("collaborators", "name email")
+        .populate("collaborators.user", "name email")
+        .populate("statusChangedBy", "name email")
         .lean();
     if (!doc) return null;
 
@@ -174,16 +242,16 @@ async function getDocument(docId, userId) {
  */
 async function listDocuments(userId, { filter = "all", search = "" } = {}) {
     let query = {
-        $or: [{ owner: userId }, { collaborators: userId }],
+        $or: [{ owner: userId }, { "collaborators.user": userId }],
     };
 
     if (filter === "owned") query = { owner: userId };
-    if (filter === "shared") query = { collaborators: userId, owner: { $ne: userId } };
+    if (filter === "shared") query = { "collaborators.user": userId, owner: { $ne: userId } };
     if (search.trim()) query.$text = { $search: search.trim() };
 
     const documents = await Document.find(query)
         .populate("owner", "name email")
-        .populate("collaborators", "name email")
+        .populate("collaborators.user", "name email")
         .sort({ updatedAt: -1 })
         .limit(100)
         .lean();
@@ -235,16 +303,49 @@ async function deleteDocument(docId, userId) {
 // ─── Collaborator management ──────────────────────────────────────────────────
 
 /**
- * Add a userId to a document's collaborator list (idempotent).
- * Called by the socket handler when a new user joins a doc room.
+ * Add a user to a document's collaborator list with an explicit role, or update
+ * the role if they are already on it. Idempotent.
+ *
+ * Called only from the approval endpoint. It is deliberately NOT reachable from
+ * the editing path: op:submit used to $addToSet the editor, which silently
+ * enrolled anyone who could reach a document.
  */
-async function addCollaborator(docId, userId) {
-    await Document.findByIdAndUpdate(
-        docId,
-        { $addToSet: { collaborators: userId } },
-        { new: false }  // don't need the result
+async function addCollaborator(docId, userId, role = ROLES.EDITOR) {
+    if (![ROLES.EDITOR, ROLES.VIEWER].includes(role)) {
+        const err = new Error("Invalid role");
+        err.statusCode = 400;
+        throw err;
+    }
+
+    // Try to update an existing entry first; insert only if there was none.
+    const updated = await Document.findOneAndUpdate(
+        { _id: docId, "collaborators.user": userId },
+        { $set: { "collaborators.$.role": role } },
+        { new: true }
+    );
+
+    if (!updated) {
+        await Document.findByIdAndUpdate(docId, {
+            $push: { collaborators: { user: userId, role, addedAt: new Date() } },
+        });
+    }
+
+    await redisService.invalidateDocCache(docId);
+    return role;
+}
+
+/**
+ * Remove a collaborator entirely.
+ * @returns {Promise<boolean>} true if an entry was actually removed
+ */
+async function removeCollaborator(docId, userId) {
+    const result = await Document.findOneAndUpdate(
+        { _id: docId, "collaborators.user": userId },
+        { $pull: { collaborators: { user: userId } } },
+        { new: true }
     );
     await redisService.invalidateDocCache(docId);
+    return Boolean(result);
 }
 
 // ─── Content helpers ──────────────────────────────────────────────────────────
@@ -276,7 +377,13 @@ function getOpsBetween(docId, fromRevision, toRevision) {
 }
 
 module.exports = {
+    ROLES,
+    roleOf,
+    canWrite,
     assertAccess,
+    assertWriteAccess,
+    assertOwner,
+    removeCollaborator,
     toCanonical,
     loadCanonical,
     createDocument,

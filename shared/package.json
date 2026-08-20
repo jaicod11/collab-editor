@@ -8,8 +8,7 @@
     "./ot/operations.js": "./ot/operations.js",
     "./ot/operations": "./ot/operations.js",
     "./ot/client-sync.js": "./ot/client-sync.js",
-    "./ot/client-sync": "./ot/client-sync.js",
-    "./ot/transform.js": "./ot/transform.js"
+    "./ot/client-sync": "./ot/client-sync.js"
   },
   "scripts": {
     "test": "node --test"

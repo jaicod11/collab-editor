@@ -10,7 +10,9 @@
  *    "doc:restore"  { docId, versionId }
  *
  *  Server → Client:
- *    "doc:load"     { content, revision, title }
+ *    "doc:load"       { content, revision, title }
+ *    "presence:update" [{ userId, name, initials }]  full roster, to the joiner
+ *    "presence:join"   { userId, name, initials }    to everyone already in room
  *    "op:ack"       { revision, op }          (only to submitting socket)
  *    "op:broadcast" { op, revision, userId }  (to all others via Redis)
  *    "doc:error"    { message }
@@ -44,7 +46,10 @@ module.exports = function documentHandler(io, socket, redisClient, CHANNEL_PREFI
   // Only grants are cached. A denial is re-checked every time, so a user who
   // is added as a collaborator mid-session is picked up without reconnecting,
   // and a stale denial can never be served from cache.
-  const grantedDocs = new Set();
+  // docId -> role ("owner" | "editor" | "viewer"). Caching the ROLE, not just
+  // the fact of access, is what lets op:submit reject a viewer without a
+  // database round trip per keystroke.
+  const grantedDocs = new Map();
 
   /**
    * Verify the connected user may read/write this document.
@@ -55,20 +60,67 @@ module.exports = function documentHandler(io, socket, redisClient, CHANNEL_PREFI
    * @returns {Promise<boolean>} true when access is granted
    */
   async function ensureAccess(docId) {
-    if (grantedDocs.has(docId)) return true;
+    if (grantedDocs.has(docId)) return grantedDocs.get(docId);
 
     try {
-      await documentService.assertAccess(docId, user.id);
-      grantedDocs.add(docId);
-      return true;
+      const { role } = await documentService.assertAccess(docId, user.id);
+      grantedDocs.set(docId, role);
+      return role;
     } catch (err) {
       console.warn(
         `[documentHandler] access refused: user=${user.id} doc=${docId} (${err.statusCode ?? 500})`
       );
-      socket.emit("doc:error", { message: "Access denied" });
-      return false;
+      socket.emit("doc:error", { code: "ACCESS_DENIED", message: "Access denied" });
+      return null;
     }
   }
+
+  /**
+   * Access for an operation that CHANGES the document.
+   * A viewer passes ensureAccess (they may read) but must not get here.
+   */
+  async function ensureWriteAccess(docId) {
+    const role = await ensureAccess(docId);
+    if (!role) return null; // ensureAccess already reported it
+    if (!documentService.canWrite(role)) {
+      socket.emit("doc:error", {
+        code: "VIEWER_READONLY",
+        message: "You have view-only access to this document",
+      });
+      return null;
+    }
+    return role;
+  }
+
+  // ── Forced revocation ─────────────────────────────────────────────────────
+  // Called by socketServer when the owner removes this user or downgrades them
+  // to viewer. The per-socket cache above would otherwise keep serving the
+  // stale grant until the socket reconnected, letting a removed collaborator
+  // carry on editing.
+  //
+  // Installed on socket.data rather than as a socket.on() listener: socket.on
+  // handles messages coming FROM the client, so an io.to(...).emit() from the
+  // server would reach the browser and never run this. socketServer looks the
+  // function up on each LOCAL socket instead, with Redis fanning the event out
+  // to the other nodes.
+  socket.data.revokeDocumentAccess = (revokedDocId, { disconnect = true } = {}) => {
+    if (!revokedDocId) return;
+    grantedDocs.delete(revokedDocId);
+
+    if (disconnect) {
+      const rooms = require("../rooms");
+      socket.leave(`doc:${revokedDocId}`);
+      rooms.leave(revokedDocId, socket.id);
+      socket.to(`doc:${revokedDocId}`).emit("presence:leave", { userId: user.id });
+    }
+
+    socket.emit("doc:error", {
+      code: disconnect ? "ACCESS_REVOKED" : "VIEWER_READONLY",
+      message: disconnect
+        ? "Your access to this document has been removed"
+        : "You now have view-only access to this document",
+    });
+  };
 
   // ── doc:join ──────────────────────────────────────────────────────────────
   socket.on("doc:join", async ({ docId }) => {
@@ -76,7 +128,8 @@ module.exports = function documentHandler(io, socket, redisClient, CHANNEL_PREFI
 
     try {
       // ── Authorization — BEFORE joining the room or loading any content ──
-      if (!(await ensureAccess(docId))) return;
+      const role = await ensureAccess(docId);
+      if (!role) return;
 
       // Join Socket.io room
       socket.join(`doc:${docId}`);
@@ -90,14 +143,32 @@ module.exports = function documentHandler(io, socket, redisClient, CHANNEL_PREFI
         return socket.emit("doc:error", { code: "NOT_FOUND", message: "Document not found" });
       }
 
-      // Send initial document state to this socket only
+      // Send initial document state to this socket only. `role` travels with
+      // it so the editor can render read-only for a viewer — the UI hint is a
+      // convenience; the server enforces it independently on every write.
       socket.emit("doc:load", {
         content: doc.content,
         revision: doc.revision,
         title: doc.title,
+        role,
       });
 
-      // Notify other users in the room
+      // ── Presence ────────────────────────────────────────────────────────
+      // Send the JOINING socket the full roster. presence:join below only
+      // reaches sockets already in the room, so without this a user opening an
+      // active document saw nobody — only people who arrived after them.
+      //
+      // NOTE: rooms.js is an in-process Map, so this roster covers only the
+      // members connected to THIS node. With more than one server process a
+      // user would see just their own node's collaborators. Making it correct
+      // across nodes means moving room membership into Redis (e.g. a hash per
+      // document, written on join and reaped on disconnect); that is a separate
+      // piece of work and is deliberately not attempted here.
+      socket.emit("presence:update", rooms.getMembers(docId)
+        .filter((m) => m.userId !== user.id)
+        .map((m) => ({ userId: m.userId, name: m.name, initials: m.initials })));
+
+      // Notify users already in the room that we arrived.
       socket.to(`doc:${docId}`).emit("presence:join", {
         userId: user.id,
         name: user.name,
@@ -139,7 +210,10 @@ module.exports = function documentHandler(io, socket, redisClient, CHANNEL_PREFI
 
     try {
       // ── Authorization — before taking the lock ──────────────────────────
-      if (!(await ensureAccess(docId))) return;
+      // Write access, not merely access: a viewer may read the document but
+      // must not be able to change it. Enforced on the server, not by hiding
+      // a button in the UI.
+      if (!(await ensureWriteAccess(docId))) return;
 
       // ── Validate op shape — before taking the lock ──────────────────────
       // Rejects malformed indices that String.slice would otherwise accept and
@@ -272,7 +346,8 @@ module.exports = function documentHandler(io, socket, redisClient, CHANNEL_PREFI
 
     try {
       // ── Authorization — BEFORE reading or rewriting any content ─────────
-      if (!(await ensureAccess(docId))) return;
+      // Restoring rewrites the document wholesale, so it needs write access.
+      if (!(await ensureWriteAccess(docId))) return;
 
       const outcome = await lockService.withDocumentLock(redisClient, docId, async () => {
         const target = await Operation.findById(versionId).lean();

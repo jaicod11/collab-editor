@@ -57,7 +57,11 @@ async function bootstrap() {
     },
   });
 
-  initSocket(io);
+  const socketApi = initSocket(io);
+  // REST handlers reach connected sockets through these rather than importing
+  // io: keeps the controllers free of socket wiring and testable in isolation.
+  app.set("notifyUser", socketApi.notifyUser);
+  app.set("revokeDocumentAccess", socketApi.revokeDocumentAccess);
 
   server.listen(PORT, () => {
     console.log(`[Server] Listening on http://localhost:${PORT}`);

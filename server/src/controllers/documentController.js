@@ -28,18 +28,22 @@ exports.list = async (req, res, next) => {
     const { filter = "all", search = "" } = req.query;
 
     let query = {
-      $or: [{ owner: userId }, { collaborators: userId }],
+      $or: [{ owner: userId }, { "collaborators.user": userId }],
     };
 
     if (filter === "owned") query = { owner: userId };
-    if (filter === "shared") query = { collaborators: userId, owner: { $ne: userId } };
+    if (filter === "starred") query = { starredBy: userId };
+    if (filter === "shared") query = { "collaborators.user": userId, owner: { $ne: userId } };
 
     // ── Status scoping ────────────────────────────────────────────────────
     // "all" / "owned" / "shared" only ever return Active documents — this is
     // what My Documents, Dashboard, and Shared with Me should show.
     // Archived and Trash (soft-deleted) docs are fetched via their own
     // dedicated filter values so they never leak into the normal views.
-    if (filter === "archived") {
+    if (filter === "starred") {
+      // Starred spans everything the user can still open.
+      query.status = "Active";
+    } else if (filter === "archived") {
       query.status = "Archived";
     } else if (filter === "trash") {
       query.status = "Deleted";
@@ -53,14 +57,26 @@ exports.list = async (req, res, next) => {
 
     const documents = await Document.find(query)
       .populate("owner", "name email")
-      .populate("collaborators", "name email")
+      .populate("collaborators.user", "name email")
+      .populate("statusChangedBy", "name email")
       .sort({ updatedAt: -1 })
       .limit(100)
       .lean();
 
-    const recent = documents.slice(0, 10);
+    // Normalise to the same shape getOne serves, so the client sees one
+    // collaborator representation everywhere (including the role).
+    // `starred` is per-caller, so it is derived here rather than cached in the
+    // shared canonical shape. starredBy itself is not returned: who else
+    // starred a document is nobody's business.
+    const shaped = documents.map((d) => {
+      const canonical = documentService.toCanonical(d);
+      const starred = (d.starredBy ?? []).some((u) => u.toString() === userId);
+      delete canonical.starredBy;
+      return { ...canonical, starred };
+    });
+    const recent = shaped.slice(0, 10);
 
-    res.json({ documents, recent });
+    res.json({ documents: shaped, recent });
   } catch (err) {
     next(err);
   }
@@ -105,7 +121,8 @@ exports.getOne = async (req, res, next) => {
       return res.status(403).json({ message: "Access denied" });
     }
 
-    res.json(doc);
+    const raw = await Document.findById(docId).select("starredBy").lean();
+    res.json({ ...doc, starred: (raw?.starredBy ?? []).some((u) => u.toString() === userId) });
   } catch (err) {
     next(err);
   }
@@ -123,6 +140,10 @@ exports.update = async (req, res, next) => {
         return res.status(400).json({ message: "Invalid status value" });
       }
       updates.status = status;
+      // Stamp the transition so Trash and Archive can report who binned a
+      // document and when, instead of showing the owner and updatedAt.
+      updates.statusChangedBy = req.user.id;
+      updates.statusChangedAt = new Date();
     }
 
     const doc = await Document.findOneAndUpdate(
@@ -151,8 +172,8 @@ exports.leave = async (req, res, next) => {
     const userId = req.user.id;
 
     const doc = await Document.findOneAndUpdate(
-      { _id: docId, collaborators: userId }, // must currently be a collaborator
-      { $pull: { collaborators: userId } },
+      { _id: docId, "collaborators.user": userId }, // must currently be a collaborator
+      { $pull: { collaborators: { user: userId } } },
       { new: true }
     );
 
@@ -184,6 +205,33 @@ exports.remove = async (req, res, next) => {
     await redisService.invalidateDocCache(req.params.id);
 
     res.json({ message: "Document deleted" });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ── PUT /api/documents/:id/star ───────────────────────────────────────────────
+// Anyone who can open the document may star it; a star is personal.
+exports.star = async (req, res, next) => {
+  try {
+    const docId = req.params.id;
+    await documentService.assertAccess(docId, req.user.id);
+    await Document.findByIdAndUpdate(docId, { $addToSet: { starredBy: req.user.id } });
+    await redisService.invalidateDocCache(docId);
+    res.json({ starred: true });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ── DELETE /api/documents/:id/star ────────────────────────────────────────────
+exports.unstar = async (req, res, next) => {
+  try {
+    const docId = req.params.id;
+    await documentService.assertAccess(docId, req.user.id);
+    await Document.findByIdAndUpdate(docId, { $pull: { starredBy: req.user.id } });
+    await redisService.invalidateDocCache(docId);
+    res.json({ starred: false });
   } catch (err) {
     next(err);
   }

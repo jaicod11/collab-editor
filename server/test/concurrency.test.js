@@ -63,7 +63,10 @@ let server;
 before(async () => {
   server = spawn("node", ["src/index.js"], {
     cwd: path.join(__dirname, ".."),
-    env: { ...process.env, PORT: String(PORT) },
+    // The limiter stays in the request path; only its ceiling is raised,
+    // because an integration suite legitimately makes hundreds of calls from
+    // one address.
+    env: { ...process.env, PORT: String(PORT), RATE_LIMIT_MAX: "100000" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   // Wait for the listen line rather than a fixed sleep.
