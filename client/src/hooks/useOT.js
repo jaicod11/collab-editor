@@ -102,6 +102,30 @@ function writeCaretOffset(el, offset) {
 }
 
 /**
+ * Select `[start, end)` within `el`, clamped to its content. Collapses to a
+ * caret when the two are equal — which is what an empty-marker insertion wants.
+ */
+function applySelectionRange(el, start, end) {
+  const length = (el.textContent ?? "").length;
+  const from = Math.max(0, Math.min(start, length));
+  const to = Math.max(from, Math.min(end, length));
+
+  const node = el.firstChild;
+  const range = document.createRange();
+  if (node && node.nodeType === Node.TEXT_NODE) {
+    range.setStart(node, Math.min(from, node.length));
+    range.setEnd(node, Math.min(to, node.length));
+  } else {
+    range.setStart(el, 0);
+    range.collapse(true);
+  }
+
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+/**
  * Where a caret at `offset` ends up after `op` is applied.
  * Text inserted before the caret pushes it right; text deleted before it pulls
  * it left; a delete spanning the caret collapses it to the delete's start.
@@ -276,6 +300,34 @@ export function useOT({ socket, docId, editorRef, onResync }) {
   }, [editorRef]);
 
   /**
+   * Apply a pure text transform to the current selection.
+   *
+   * `transformFn(text, selectionStart, selectionEnd)` returns
+   * `{ text, selectionStart, selectionEnd }` — the shape every function in
+   * shared/ot/markdown.js produces. The result goes through exactly the same
+   * write-and-diff path as typing, so a toolbar action is indistinguishable
+   * from a keystroke as far as sync is concerned: it emits ordinary
+   * insert/delete ops and needs no special handling anywhere.
+   *
+   * @returns {boolean} whether anything changed
+   */
+  const applyTextTransform = useCallback((transformFn) => {
+    const el = editorRef?.current;
+    if (!el) return false;
+
+    const current = el.textContent ?? "";
+    const sel = readSelectionRange(el) ?? { start: current.length, end: current.length };
+    const result = transformFn(current, sel.start, sel.end);
+    if (!result || result.text === current) return false;
+
+    el.textContent = result.text;
+    prevContentRef.current = current; // diff against what was there before
+    applySelectionRange(el, result.selectionStart, result.selectionEnd);
+    handleEditorInputRef.current?.();
+    return true;
+  }, [editorRef]);
+
+  /**
    * If the browser has put element nodes in the editor, flatten them back to
    * text and re-diff.
    *
@@ -382,6 +434,7 @@ export function useOT({ socket, docId, editorRef, onResync }) {
   return {
     submitOp,
     handleEditorInput,
+    applyTextTransform,
     replaceSelection,
     normalizeIfStructured,
     seed,

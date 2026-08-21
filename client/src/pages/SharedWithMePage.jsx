@@ -20,6 +20,7 @@ import { useNavigate } from "react-router-dom";
 import { useToast } from "../components/UI/Toast";
 import { useAuthStore } from "../store/authSlice";
 import Sidebar, { T, Icons } from "../components/Layout/Sidebar";
+import OpenSharedLink from "../components/UI/OpenSharedLink";
 import PortalMenu from "../components/UI/PortalMenu";
 import api from "../services/api";
 
@@ -353,6 +354,8 @@ export default function SharedWithMePage() {
                         </div>
                     </div>
                 </div>
+
+                <OpenSharedLink theme={T} />
 
                 {/* Sort control */}
                 <div style={{ display: "flex", gap: 8, marginBottom: 28, flexWrap: "wrap", alignItems: "center" }}>

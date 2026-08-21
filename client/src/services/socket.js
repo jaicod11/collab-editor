@@ -22,8 +22,9 @@
  */
 
 import { io } from "socket.io-client";
+import { getAuthToken } from "../store/authSlice";
 
-const WS_URL = import.meta.env.VITE_WS_URL ?? "http://localhost:4000";
+const WS_URL = import.meta.env?.VITE_WS_URL ?? "http://localhost:4000";
 
 class SocketService {
   constructor() {
@@ -32,12 +33,14 @@ class SocketService {
 
   /**
    * Create (or return existing) socket connection.
-   * Reads JWT from localStorage automatically.
+   * Reads the JWT from the auth store automatically.
    */
   connect() {
     if (this._socket?.connected) return this._socket;
 
-    const token = localStorage.getItem("token");
+    // Single source of truth: the persisted auth store, not a separate
+    // localStorage key that could disagree with it.
+    const token = getAuthToken();
 
     this._socket = io(WS_URL, {
       auth:                { token },

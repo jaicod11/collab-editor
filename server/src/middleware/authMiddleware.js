@@ -2,6 +2,12 @@
  * middleware/authMiddleware.js
  * ─────────────────────────────────────────────────────────────────────────────
  * Express middleware that verifies the Bearer JWT on every protected route.
+ *
+ * Every 401 raised HERE carries code "AUTH_REQUIRED". That is what tells the
+ * client the SESSION is finished, as opposed to an ordinary 401 from a business
+ * rule — a wrong current password on the settings page, bad credentials at
+ * sign-in — which must not sign anyone out. The client's response interceptor
+ * keys its teardown on that code.
  * Attaches req.user = { id, name, email } on success.
  */
 
@@ -11,7 +17,7 @@ const sessionService = require("../services/sessionService");
 exports.protect = async (req, res, next) => {
   const header = req.headers.authorization;
   if (!header || !header.startsWith("Bearer ")) {
-    return res.status(401).json({ message: "No token provided" });
+    return res.status(401).json({ code: "AUTH_REQUIRED", message: "No token provided" });
   }
 
   const token = header.split(" ")[1];
@@ -22,7 +28,7 @@ exports.protect = async (req, res, next) => {
     payload = jwt.verify(token, process.env.JWT_SECRET);
   } catch (err) {
     const msg = err.name === "TokenExpiredError" ? "Token expired" : "Invalid token";
-    return res.status(401).json({ message: msg });
+    return res.status(401).json({ code: "AUTH_REQUIRED", message: msg });
   }
 
   // ── 2. Confirm the session is still live ────────────────────────────────
@@ -44,7 +50,7 @@ exports.protect = async (req, res, next) => {
   if (status !== sessionService.SESSION_OK) {
     // Deliberately generic — does not distinguish "expired", "revoked" or
     // "no such user", so the endpoint cannot be used to enumerate accounts.
-    return res.status(401).json({ message: "Session expired or revoked" });
+    return res.status(401).json({ code: "AUTH_REQUIRED", message: "Session expired or revoked" });
   }
 
   req.user = { id: payload.id, name: payload.name, email: payload.email };

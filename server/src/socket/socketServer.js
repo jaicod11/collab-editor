@@ -101,9 +101,9 @@ module.exports = function initSocket(io) {
   // out so every node does this for the sockets it holds.
   redisSub.subscribe(REVOKE_CHANNEL, (message) => {
     try {
-      const { docId, userId, disconnect } = JSON.parse(message);
+      const { docId, userId, disconnect, role } = JSON.parse(message);
       for (const socket of localSocketsIn(`user:${userId}`)) {
-        socket.data.revokeDocumentAccess?.(docId, { disconnect });
+        socket.data.applyAccessChange?.(docId, { disconnect, role });
       }
     } catch (e) {
       console.error("[Socket] revoke parse error:", e);
@@ -145,15 +145,17 @@ module.exports = function initSocket(io) {
     },
 
     /**
-     * Invalidate a user's cached access to a document, and optionally force
-     * their sockets out of the room. Without this a collaborator removed
-     * mid-session keeps editing until they reconnect, because documentHandler
-     * memoises the grant per socket.
+     * Tell a user's sockets that their access to a document changed.
+     *
+     * `disconnect: true` removes them from the room entirely. Otherwise `role`
+     * carries the NEW role, so an upgrade and a downgrade are distinguishable —
+     * both drop the per-socket role cache, which is what makes the change bite
+     * without a reconnect.
      */
-    revokeDocumentAccess(docId, userId, { disconnect = true } = {}) {
+    changeDocumentAccess(docId, userId, { disconnect = true, role = null } = {}) {
       redisClient
-        .publish(REVOKE_CHANNEL, JSON.stringify({ docId, userId, disconnect }))
-        .catch((e) => console.error("[Socket] revoke publish failed:", e.message));
+        .publish(REVOKE_CHANNEL, JSON.stringify({ docId, userId, disconnect, role }))
+        .catch((e) => console.error("[Socket] access-change publish failed:", e.message));
     },
   };
 };

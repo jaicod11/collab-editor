@@ -9,6 +9,7 @@ import { useDocument } from "../hooks/useDocument";
 import { useToast } from "../components/UI/Toast";
 import { useAuthStore } from "../store/authSlice";
 import Sidebar, { T, Icons } from "../components/Layout/Sidebar";
+import OpenSharedLink from "../components/UI/OpenSharedLink";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function getGreeting() {
@@ -194,6 +195,8 @@ export default function DocumentDashboard() {
       <Sidebar activeTab="home" />
       <main style={{ flex: 1, padding: "40px 48px", overflowY: "auto" }}>
         <TopBar user={user} search={search} onSearch={setSearch} onLogout={logout} navigate={navigate} />
+
+        <OpenSharedLink theme={T} />
 
         <section>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>

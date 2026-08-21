@@ -134,12 +134,15 @@ export default function ShareModal({ docId, currentUser, onClose }) {
 
   const changeRole = async (userId, role) => {
     try {
-      await api.patch(`/documents/${docId}/collaborators/${userId}`, { role });
+      // Take the role the server confirms rather than the one requested, so the
+      // dropdown can never show a value the server did not actually store.
+      const { data: res } = await api.patch(`/documents/${docId}/collaborators/${userId}`, { role });
+      const applied = res?.role ?? role;
       setData((d) => ({
         ...d,
-        collaborators: d.collaborators.map((c) => (c._id === userId ? { ...c, role } : c)),
+        collaborators: d.collaborators.map((c) => (c._id === userId ? { ...c, role: applied } : c)),
       }));
-      toast.success(role === "viewer" ? "Changed to view-only" : "Changed to editor");
+      toast.success(applied === "viewer" ? "Changed to view-only" : "Changed to editor");
     } catch (err) {
       toast.error(err.response?.data?.message ?? "Could not change the role");
     }

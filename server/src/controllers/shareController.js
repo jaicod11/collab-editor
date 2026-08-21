@@ -264,15 +264,26 @@ exports.setCollaboratorRole = async (req, res, next) => {
     }
 
     const doc = await Document.findById(docId).lean();
+
+    // The owner is not a collaborator and has no assignable role. Without this
+    // guard, roleOf() returned "owner" (truthy), the check passed, and
+    // addCollaborator PUSHED the owner into their own collaborator list — so
+    // the document ended up with an owner who was also listed as a viewer, and
+    // the Share modal rendered them twice.
+    if (documentService.roleOf(doc, userId) === ROLES.OWNER) {
+      return res.status(400).json({ message: "The owner's role cannot be changed" });
+    }
+
     if (!documentService.roleOf(doc, userId)) {
       return res.status(404).json({ message: "Not a collaborator on this document" });
     }
 
     await documentService.addCollaborator(docId, userId, role);
 
-    // A downgrade to viewer must bite immediately, not at the next reconnect:
-    // documentHandler caches access grants per socket.
-    req.app.get("revokeDocumentAccess")?.(docId, userId, { disconnect: role === ROLES.VIEWER });
+    // Both directions must bite immediately, not at the next reconnect:
+    // documentHandler memoises the role per socket. `disconnect: false` keeps
+    // them in the room; `role` tells them which way it went.
+    req.app.get("changeDocumentAccess")?.(docId, userId, { disconnect: false, role });
 
     res.json({ userId, role });
   } catch (err) {
@@ -286,6 +297,14 @@ exports.removeCollaborator = async (req, res, next) => {
     const { id: docId, userId } = req.params;
     await documentService.assertOwner(docId, req.user.id);
 
+    // Guarded explicitly rather than relying on the owner simply not being in
+    // the collaborators array: an owner who had been wrongly pushed into it
+    // (see setCollaboratorRole) could otherwise remove themselves.
+    const doc = await Document.findById(docId).lean();
+    if (documentService.roleOf(doc, userId) === ROLES.OWNER) {
+      return res.status(400).json({ message: "The owner cannot be removed from their own document" });
+    }
+
     const removed = await documentService.removeCollaborator(docId, userId);
     if (!removed) {
       return res.status(404).json({ message: "Not a collaborator on this document" });
@@ -296,7 +315,7 @@ exports.removeCollaborator = async (req, res, next) => {
 
     // Force them out of the room and invalidate the cached grant their open
     // socket is holding.
-    req.app.get("revokeDocumentAccess")?.(docId, userId, { disconnect: true });
+    req.app.get("changeDocumentAccess")?.(docId, userId, { disconnect: true });
 
     res.json({ removed: true, userId });
   } catch (err) {

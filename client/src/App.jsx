@@ -16,15 +16,24 @@ import NewDocumentPage from "./pages/NewDocumentPage";
 import SettingsPage from "./pages/SettingsPage";
 import EditorPage from "./pages/EditorPage";
 import JoinPage from "./pages/JoinPage";
-import { useAuthStore } from "./store/authSlice";
+import { useAuthStore, hasHydrated } from "./store/authSlice";
 
 function ProtectedRoute({ children }) {
-  const { isAuthenticated, token } = useAuthStore();
+  const token = useAuthStore((s) => s.token);
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+
+  // persist uses synchronous storage, so this is normally already true on the
+  // first render. Guarding anyway: reading the store before rehydration has
+  // finished would redirect a signed-in user to /auth on every reload, which is
+  // the failure this phase existed to fix — it must not come back through a
+  // storage change.
+  if (!hasHydrated()) return null;
+
   if (!isAuthenticated && !token) {
     return (
       <Navigate
         to="/auth"
-        state={{ from: window.location.pathname }}
+        state={{ from: window.location.pathname + window.location.search }}
         replace
       />
     );
@@ -35,6 +44,7 @@ function ProtectedRoute({ children }) {
 function PublicRoute({ children }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const location = useLocation();
+  if (!hasHydrated()) return null;
   if (isAuthenticated) {
     const from = location.state?.from ?? "/";
     return <Navigate to={from} replace />;

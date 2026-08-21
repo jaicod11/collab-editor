@@ -30,6 +30,7 @@ import {
   useImperativeHandle,
 } from "react";
 import { useOT }       from "../../hooks/useOT";
+import { continueListOnEnter, toggleWrap } from "@shared/ot/markdown.js";
 import { usePresence } from "../../hooks/usePresence";
 import CursorOverlay   from "./CursorOverlay";
 
@@ -58,7 +59,7 @@ const EditorCore = forwardRef(function EditorCore(
 
   // ── OT engine — ONE instance only ────────────────────────────────────────
   const {
-    handleEditorInput, replaceSelection, normalizeIfStructured,
+    handleEditorInput, replaceSelection, normalizeIfStructured, applyTextTransform,
     seed, content, revision, loaded, saveState,
   } = useOT({
     socket,
@@ -117,9 +118,11 @@ const EditorCore = forwardRef(function EditorCore(
     getContent:  () => editorRef.current?.textContent ?? "",
     getRevision: () => revision,
     isLoaded:    () => loaded,
+    // The toolbar calls this; every action goes through the normal input path.
+    applyMarkdown: (transformFn) => applyTextTransform(transformFn),
     focus:       () => editorRef.current?.focus(),
     getEditorEl: () => editorRef.current,
-  }), [revision, loaded]);
+  }), [revision, loaded, applyTextTransform]);
 
   // ── Plain-text input policy ───────────────────────────────────────────────
   //
@@ -137,6 +140,19 @@ const EditorCore = forwardRef(function EditorCore(
     const el = editorRef.current;
     if (!el || readOnly) return undefined;
 
+    // Ctrl/Cmd+B, I and U are caught at KEYDOWN — ahead of the beforeinput
+    // guard below, which still blocks every other native formatting path. The
+    // browser would apply real formatting markup; these insert markdown markers
+    // instead, so the result is characters that sync like any other text.
+    const SHORTCUTS = { b: "**", i: "_", u: "**" };
+    const onKeyDown = (e) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+      const marker = SHORTCUTS[e.key.toLowerCase()];
+      if (!marker) return;
+      e.preventDefault();
+      applyTextTransform((text, start, end) => toggleWrap(text, start, end, marker));
+    };
+
     // beforeinput reports WHAT the browser is about to do, before it does it.
     const onBeforeInput = (e) => {
       switch (e.inputType) {
@@ -146,7 +162,13 @@ const EditorCore = forwardRef(function EditorCore(
         case "insertParagraph":
         case "insertLineBreak":
           e.preventDefault();
-          replaceSelection("\n");
+          // Inside a list item, continue the list; on an empty item, end it.
+          // Falls through to a plain newline everywhere else.
+          if (!applyTextTransform((text, start, end) =>
+            start === end ? continueListOnEnter(text, start) : null
+          )) {
+            replaceSelection("\n");
+          }
           break;
 
         // Cmd/Ctrl+B, I, U still apply native formatting in a contentEditable
@@ -208,19 +230,21 @@ const EditorCore = forwardRef(function EditorCore(
       handleEditorInput();
     };
 
+    el.addEventListener("keydown", onKeyDown);
     el.addEventListener("beforeinput", onBeforeInput);
     el.addEventListener("paste", onPaste);
     el.addEventListener("drop", onDrop);
     el.addEventListener("compositionstart", onCompositionStart);
     el.addEventListener("compositionend", onCompositionEnd);
     return () => {
+      el.removeEventListener("keydown", onKeyDown);
       el.removeEventListener("beforeinput", onBeforeInput);
       el.removeEventListener("paste", onPaste);
       el.removeEventListener("drop", onDrop);
       el.removeEventListener("compositionstart", onCompositionStart);
       el.removeEventListener("compositionend", onCompositionEnd);
     };
-  }, [readOnly, replaceSelection, normalizeIfStructured, handleEditorInput]);
+  }, [readOnly, replaceSelection, normalizeIfStructured, handleEditorInput, applyTextTransform]);
 
   const handleInput = useCallback(() => {
     if (isComposingRef.current) return; // mid-IME: not committed text yet

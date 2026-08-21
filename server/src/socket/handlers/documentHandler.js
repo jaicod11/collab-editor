@@ -92,34 +92,45 @@ module.exports = function documentHandler(io, socket, redisClient, CHANNEL_PREFI
     return role;
   }
 
-  // ── Forced revocation ─────────────────────────────────────────────────────
-  // Called by socketServer when the owner removes this user or downgrades them
-  // to viewer. The per-socket cache above would otherwise keep serving the
-  // stale grant until the socket reconnected, letting a removed collaborator
-  // carry on editing.
+  // ── Access changes pushed from the REST layer ─────────────────────────────
+  // Fired when the owner removes this user or changes their role. The
+  // per-socket role cache above would otherwise keep serving the stale value
+  // until the socket reconnected — a removed collaborator would carry on
+  // editing, and an upgraded viewer would stay locked out.
   //
   // Installed on socket.data rather than as a socket.on() listener: socket.on
   // handles messages coming FROM the client, so an io.to(...).emit() from the
   // server would reach the browser and never run this. socketServer looks the
   // function up on each LOCAL socket instead, with Redis fanning the event out
   // to the other nodes.
-  socket.data.revokeDocumentAccess = (revokedDocId, { disconnect = true } = {}) => {
-    if (!revokedDocId) return;
-    grantedDocs.delete(revokedDocId);
+  socket.data.applyAccessChange = (changedDocId, { disconnect = true, role = null } = {}) => {
+    if (!changedDocId) return;
+
+    // Always drop the cached role. Re-reading it from the database on the next
+    // operation is cheaper than reasoning about whether a seeded value could be
+    // stale after two changes in flight.
+    grantedDocs.delete(changedDocId);
 
     if (disconnect) {
       const rooms = require("../rooms");
-      socket.leave(`doc:${revokedDocId}`);
-      rooms.leave(revokedDocId, socket.id);
-      socket.to(`doc:${revokedDocId}`).emit("presence:leave", { userId: user.id });
+      socket.leave(`doc:${changedDocId}`);
+      rooms.leave(changedDocId, socket.id);
+      socket.to(`doc:${changedDocId}`).emit("presence:leave", { userId: user.id });
+      socket.emit("doc:error", {
+        code: "ACCESS_REVOKED",
+        message: "Your access to this document has been removed",
+      });
+      return;
     }
 
-    socket.emit("doc:error", {
-      code: disconnect ? "ACCESS_REVOKED" : "VIEWER_READONLY",
-      message: disconnect
-        ? "Your access to this document has been removed"
-        : "You now have view-only access to this document",
-    });
+    // A ROLE CHANGE, in either direction. This used to emit doc:error with code
+    // VIEWER_READONLY whenever `disconnect` was false — so being promoted from
+    // viewer to editor told the user they had just become read-only, and the
+    // client duly made their editor read-only. The event now carries the actual
+    // new role and is not an error.
+    if (role) {
+      socket.emit("access:role", { docId: changedDocId, role });
+    }
   };
 
   // ── doc:join ──────────────────────────────────────────────────────────────

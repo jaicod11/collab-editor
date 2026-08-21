@@ -7,6 +7,10 @@ import { useAuthStore } from "../store/authSlice";
 import { useDocumentStore } from "../store/documentSlice";
 import EditorCore from "../components/Editor/EditorCore";
 import ShareModal from "../components/Editor/ShareModal";
+import MarkdownToolbar from "../components/Editor/MarkdownToolbar";
+import MarkdownPreview from "../components/Editor/MarkdownPreview";
+import PrintableDocument from "../components/Editor/PrintableDocument";
+import { exportDocumentAsPdf } from "../lib/exportDocument";
 import api from "../services/api";
 
 const E = {
@@ -257,6 +261,11 @@ export default function EditorPage() {
   const [saveStatus, setSaveStatus] = useState("Saved");
   const [showHistory, setShowHistory] = useState(true);
   const [showShare, setShowShare] = useState(false);
+  const [preview, setPreview] = useState(false);
+  // Mirrors the editor's text so the preview can render it without reaching
+  // into the DOM. Kept up to date by onContentChange, which local typing now
+  // drives (Phase 4).
+  const [markdownSource, setMarkdownSource] = useState("");
   // The viewer's own role, reported by doc:load. Drives the read-only banner;
   // the server enforces it independently on every write.
   const [myRole, setMyRole] = useState(null);
@@ -333,19 +342,42 @@ export default function EditorPage() {
     };
     const onErr = ({ code, message }) => {
       toastRef.current.error(message);
-      // The owner removed us or dropped us to view-only while we had the
-      // document open. The socket has already been forced out of the room.
+      // The owner removed us while we had the document open. The socket has
+      // already been forced out of the room server-side.
       if (code === "ACCESS_REVOKED") navigateRef.current("/documents", { replace: true });
+      // A rejected write because we are a viewer — reflect it, but this is a
+      // consequence, not the notification. That arrives on access:role.
       if (code === "VIEWER_READONLY") setMyRole("viewer");
+    };
+
+    // The owner changed our role while we are in the document. Carries the new
+    // role in BOTH directions, so an upgrade makes the surface editable again
+    // without leaving and re-entering. This used to arrive as a doc:error with
+    // code VIEWER_READONLY regardless of direction, so being promoted to editor
+    // announced "you now have view-only access" and locked the editor.
+    const onRoleChange = ({ role }) => {
+      if (!role) return;
+      setMyRole(role);
+      toastRef.current.info(
+        role === "viewer"
+          ? "Your access changed to view-only."
+          : "You can now edit this document."
+      );
     };
 
     socket.on("doc:load", onLoad);
     socket.on("doc:error", onErr);
-    return () => { socket.off("doc:load", onLoad); socket.off("doc:error", onErr); };
+    socket.on("access:role", onRoleChange);
+    return () => {
+      socket.off("doc:load", onLoad);
+      socket.off("doc:error", onErr);
+      socket.off("access:role", onRoleChange);
+    };
   }, [socket, updateActiveTitle, updateActiveContent]);
 
   const handleContentChange = useCallback((content) => {
     const text = content ?? "";
+    setMarkdownSource(text);
     setWordCount(text.trim().split(/\s+/).filter(Boolean).length);
     setCharCount(text.length);
   }, []);
@@ -355,6 +387,21 @@ export default function EditorPage() {
   const handleSaveStateChange = useCallback((state) => {
     setSaveStatus(state === "saving" ? "Saving…" : "Saved");
   }, []);
+
+  // Toolbar actions go through EditorCore's imperative handle, which routes
+  // them through the same input path as typing — real ops, no DOM writes.
+  const handleMarkdownAction = useCallback((item) => {
+    editorCoreRef.current?.applyMarkdown?.(item.apply);
+  }, []);
+
+  // Export is a READ operation — viewers can already see the content, so it is
+  // deliberately not gated on the editor role. Printing does not unmount or
+  // re-render the editor: the printable copy is a separate, always-mounted node
+  // that print CSS reveals, so socket listeners, pending ops and the caret are
+  // all untouched.
+  const handleExport = useCallback(() => {
+    exportDocumentAsPdf(title);
+  }, [title]);
 
   // The resync in useOT discards un-acked local edits. Say so, rather than
   // letting the text change under the user with no explanation.
@@ -449,6 +496,14 @@ export default function EditorPage() {
             Share
           </button>
 
+          {/* Export */}
+          <button onClick={handleExport} title="Export as PDF" aria-label="Export as PDF"
+            style={{ padding: 5, background: "none", border: "none", borderRadius: 5, color: E.mutedFg, cursor: "pointer", display: "flex", transition: "all .15s" }}
+            onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,.06)"; e.currentTarget.style.color = E.fg; }}
+            onMouseLeave={e => { e.currentTarget.style.background = "none"; e.currentTarget.style.color = E.mutedFg; }}>
+            <span className="material-symbols-outlined" style={{ fontSize: 17 }}>download</span>
+          </button>
+
           {/* History toggle */}
           <button onClick={() => setShowHistory(o => !o)}
             style={{ padding: 5, background: showHistory ? E.muted : "none", border: "none", borderRadius: 5, color: showHistory ? E.fg : E.mutedFg, cursor: "pointer", display: "flex", transition: "all .15s" }}
@@ -475,11 +530,27 @@ export default function EditorPage() {
         </div>
       )}
 
+      {/* MARKDOWN TOOLBAR */}
+      {/* Formatting is markdown CHARACTERS, not attributes: the OT engine
+          transforms a flat string, so anything that is not in the text cannot
+          survive a concurrent edit. */}
+      <MarkdownToolbar
+        theme={E}
+        disabled={isViewer}
+        onAction={handleMarkdownAction}
+        preview={preview}
+        onTogglePreview={() => setPreview((p) => !p)}
+      />
+
       {/* BODY */}
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
         {/* Canvas */}
         <div style={{ flex: 1, overflowY: "auto", display: "flex", justifyContent: "center", padding: "40px 24px", background: E.bg }}>
           <div style={{ width: "100%", maxWidth: 752, background: E.muted, borderRadius: 3, minHeight: "calc(100vh - 190px)", padding: "56px 64px" }}>
+            {/* The editor stays mounted while previewing so its OT state, socket
+                listeners and pending ops are untouched — only its visibility
+                changes. Unmounting would drop un-acked edits. */}
+            <div style={{ display: preview ? "none" : "block" }}>
             <EditorCore
               ref={editorCoreRef}
               docId={docId}
@@ -495,6 +566,9 @@ export default function EditorPage() {
               readOnly={isViewer}
               className="editor-canvas-new"
             />
+            </div>
+
+            {preview && <MarkdownPreview source={markdownSource} theme={E} />}
           </div>
         </div>
 
@@ -537,6 +611,10 @@ export default function EditorPage() {
       {showShare && (
         <ShareModal docId={docId} currentUser={currentUser} onClose={() => setShowShare(false)} />
       )}
+
+      {/* Hidden on screen, revealed by the print stylesheet. Always mounted so
+          exporting never disturbs editor state. */}
+      <PrintableDocument title={title} source={markdownSource} />
 
       <style>{`
         .editor-canvas-new {

@@ -26,30 +26,39 @@ Instead of relying on heavy third-party synchronization libraries, CollabDocs im
 * 🚀 **Horizontally Scalable** — Uses Redis Pub/Sub to sync document state and operations across multiple Node.js server instances.
 * 🔒 **Secure Authentication** — JWT-based authentication for user registration and secure document access.
 
-### Deliberately plain text
+### Markdown, deliberately
 
-The editor handles **plain text only**. There is no bold, italic, heading, list
-or colour formatting, and this is a design decision rather than an omission.
+The editor is a **markdown source editor**. The formatting toolbar inserts
+markdown characters — `**bold**`, `_italic_`, `# heading`, `- list` — and a
+Preview toggle renders the result.
 
-The OT engine in `shared/ot/` transforms operations over a flat string:
-`insert(pos, text)` and `delete(pos, len)`, with positions as character offsets.
-Rich text needs an *attributed* document model — formatting spans that are
-themselves transformed alongside the text, so that two people bolding
-overlapping ranges while a third deletes across them converge on the same
-result. That is a different operation type and a different transform, not a
-toolbar.
+This is not a stylistic preference. The OT engine in `shared/ot/` transforms
+operations over a flat string: `insert(pos, text)` and `delete(pos, len)`, with
+positions as character offsets. Formatting therefore has to *be* characters. If
+it were an attribute on a range, it would need its own operation type and its
+own transform — so that two people bolding overlapping ranges while a third
+deletes across them converge on the same result. Markdown sidesteps that
+entirely: formatting is text, so it syncs through the existing transform with no
+special handling, and a formatting action is indistinguishable from typing.
 
-An earlier version of the UI shipped formatting buttons that called
-`document.execCommand`, which writes HTML into the editable element. Because the
-sync layer reads and writes `textContent`, that formatting never entered the
-diff, never reached the server, and was destroyed the moment anyone else's edit
-rewrote the element. The buttons have been removed rather than left in place
-looking functional.
+An earlier version shipped a toolbar built on `document.execCommand`, which
+writes HTML into the editable element. Because the sync layer reads and writes
+`textContent`, that formatting never entered the diff, never reached the server,
+and was destroyed the moment anyone else's edit rewrote the element. Native
+formatting shortcuts are blocked at the `beforeinput` level for the same reason;
+Ctrl/Cmd+B, I and U are intercepted earlier and insert markdown markers instead.
 
-Rich text is a future milestone and requires replacing the plain-string
-operation type with an attributed one (along the lines of a Quill delta or
-ProseMirror step), plus a matching transform and a storage format. It is not a
-change that can be made in the view layer.
+The preview is a read view rather than a live side-by-side pane, and inline
+WYSIWYG inside the contentEditable is deliberately not attempted — a second
+editable surface reintroduces exactly the DOM-structure problem the plain-text
+invariant exists to prevent. Document content is untrusted, so the preview
+renders through `marked` and is sanitised with `DOMPurify` before it reaches the
+DOM; raw HTML from a document is never rendered.
+
+True WYSIWYG remains a future milestone. It requires replacing the plain-string
+operation type with an attributed document model (along the lines of a Quill
+delta or a ProseMirror step), plus a matching transform and storage format — not
+a change that can be made in the view layer.
 
 ---
 
