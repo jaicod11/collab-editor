@@ -17,8 +17,11 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 .pnpm-store/
-package-lock.json
 yarn.lock
+
+# package-lock.json is deliberately NOT ignored. It is committed so that
+# deploys install the exact dependency tree the tests ran against — without it
+# every build re-resolves semver ranges and `npm ci` cannot run at all.
 
 # ─── Build outputs ────────────────────────────────────────────────────────────
 dist/
