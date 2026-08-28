@@ -234,22 +234,57 @@ collab-editor/
 ├── shared/                      # Shared types and OT logic
 │   └── ot/operations.js
 │
-└── infra/                       # Deployment configs
-    ├── docker-compose.yml
-    ├── nginx.conf
-    └── redis.conf
+└── infra/                       # Local dev stack only — see infra/README.md
+    ├── docker-compose.dev.yml
+    └── redis.dev.conf
 ```
 </details>
 
 ---
 
-## 📈 Scaling to Multiple Nodes
+## 📈 Running Multiple Instances
 
-CollabDocs is built to scale horizontally out of the box. To run multiple instances behind a load balancer, the app utilizes the `@socket.io/redis-adapter` to pass real-time events between nodes.
+**The app must run as a single instance today.** Some real-time paths fan out
+across nodes and some do not, so a second instance splits collaboration in ways
+that are easy to miss.
 
-To deploy in production:
-1. Ensure `nginx.conf` is configured for `ip_hash` load balancing.
-2. Point all Node.js instances to the same Redis cluster to ensure accurate distributed locking and pub/sub delivery.
+**Works across nodes.** These are published to Redis, and every node subscribes
+and forwards to its own connected clients (`socket/socketServer.js`):
+
+- document operations (`op:broadcast`) — the OT edit stream
+- per-user notifications from the REST layer (share request approve / deny)
+- forced access revocation and role changes
+
+**Single-instance only.** These use Socket.io's default in-memory adapter, so
+they reach only the sockets held by the node that emitted them:
+
+- presence — `presence:join`, `presence:leave` and cursor updates are sent with
+  `socket.to(room)` (`socket/handlers/presenceHandler.js`)
+- room membership — `socket/rooms.js` is a plain in-process `Map`, so each node
+  knows only its own members and reports an under-counted collaborator list
+- the `doc:load` broadcast after a version restore
+  (`socket/handlers/documentHandler.js`)
+
+So with two instances, two users on different nodes would see each other's
+**edits** but not each other's **cursors or presence**, and each would see an
+incomplete list of who is in the document.
+
+`@socket.io/redis-adapter` is **not** installed. Redis is still required for a
+single instance — it backs the distributed lock, the op cache and the
+cross-node channels above.
+
+### What multi-instance would require
+
+1. Install `@socket.io/redis-adapter` and wire it into `initSocket()`. That makes
+   `io.to()` / `socket.to()` fan out across nodes, fixing presence and making the
+   hand-rolled op pub/sub redundant.
+2. Move room membership out of `socket/rooms.js` into shared Redis state —
+   per-process membership cannot be made correct by an adapter alone.
+3. Sticky sessions at the load balancer, or `transports: ["websocket"]` on the
+   client, so Socket.io's long-polling handshake does not land on a different
+   node mid-negotiation.
+4. Keep a single shared Redis. `services/lockService.js` already assumes every
+   node talks to the same instance; separate Redises would void the lock.
 
 ---
 

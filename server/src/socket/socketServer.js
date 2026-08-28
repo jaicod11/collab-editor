@@ -3,8 +3,11 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * Initialises Socket.io with:
  *   1. JWT authentication middleware on every connection
- *   2. Redis pub/sub — ops published here are forwarded to ALL server nodes
- *      (scales horizontally with @socket.io/redis-adapter in production)
+ *   2. Redis pub/sub — ops, user notifications and access revocations are
+ *      published to Redis and forwarded by every subscribing node. Note that
+ *      presence and room membership (rooms.js) are NOT cross-node: Socket.io
+ *      runs on its default in-memory adapter, so the app is single-instance
+ *      today. See "Running Multiple Instances" in README.md.
  *   3. Registers document and presence event handlers
  */
 
@@ -57,8 +60,9 @@ module.exports = function initSocket(io) {
   });
 
   // ── Redis subscriber — forward published ops to correct Socket.io room ─────
-  // This is what makes multi-node scaling work: any node can publish,
-  // all subscribers forward to their connected clients.
+  // Any node can publish; every subscribing node forwards to the clients it
+  // holds. This makes the EDIT STREAM cross-node, but not presence — see the
+  // note at the top of this file.
   redisSub.pSubscribe(`${CHANNEL_PREFIX}*`, (message, channel) => {
     try {
       const docId   = channel.replace(CHANNEL_PREFIX, "");

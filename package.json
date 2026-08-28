@@ -9,9 +9,6 @@
     "test:persistence": "npm --prefix server test",
     "start": "node server/src/index.js"
   },
-  "dependencies": {
-    "redis": "^5.12.1"
-  },
   "engines": {
     "node": ">=22.12.0"
   }

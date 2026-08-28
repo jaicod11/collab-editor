@@ -110,6 +110,13 @@ at 2s, so a hung dependency returns 503 rather than hanging the check.
 
 Point Railway's health check at `/health`.
 
+> **Run exactly one instance.** Leave Railway's replica count at 1. The edit
+> stream fans out across nodes via Redis, but presence and room membership do
+> not — a second replica would let users on different nodes edit the same
+> document without seeing each other's cursors or appearing in each other's
+> collaborator list. See "Running Multiple Instances" in the README for what
+> lifting this would take.
+
 ---
 
 ## 4. Migration: collaborator roles  ⚠️ required
