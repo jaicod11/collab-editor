@@ -10,6 +10,6 @@
     "start": "node server/src/index.js"
   },
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22.12.0 <23"
   }
 }

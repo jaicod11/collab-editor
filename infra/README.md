@@ -3,7 +3,7 @@
 **This directory is the local development stack. It is not deployment
 infrastructure.**
 
-The deployment target is Railway (backend) and Vercel (frontend). Both terminate
+The deployment target is Render (backend) and Vercel (frontend). Both terminate
 TLS, route traffic, and supply their own process supervision, so there is no
 layer here that runs in production. Managed MongoDB (Atlas) and Redis (Upstash)
 are configured through their own dashboards, not through files in this repo.
@@ -31,7 +31,7 @@ Three files were deleted in Phase 8 rather than repaired. Each described an
 architecture that does not exist and had never run.
 
 **`nginx.conf`** — a reverse proxy with TLS termination, `ip_hash` sticky
-sessions and three upstream Node instances. Railway routes traffic straight to
+sessions and three upstream Node instances. Render routes traffic straight to
 the container; there is nowhere to insert a proxy, so this would never have
 served a request. It was also wrong in ways nobody noticed precisely *because*
 it never ran: three upstreams when one backend exists, so most requests would

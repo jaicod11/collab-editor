@@ -69,13 +69,19 @@ async function bootstrap() {
   const app = express();
   const server = http.createServer(app);
 
-  // Behind Railway's load balancer every request arrives from the proxy, so
+  // Behind Render's load balancer every request arrives from the proxy, so
   // req.ip is the proxy's address unless this is set. express-rate-limit keys
   // on IP: without it the whole internet shares one bucket and the limiter
   // either throttles everyone at once or is effectively disabled.
   //
-  // `1` = trust exactly one hop (the platform proxy). Trusting all hops would
-  // let a client forge X-Forwarded-For and evade the limiter entirely.
+  // `1` = trust exactly one hop (the platform proxy), which is what Render's
+  // router adds. Do NOT use `true`: trusting every hop lets a client forge
+  // X-Forwarded-For and evade the limiter entirely, and express-rate-limit
+  // raises ERR_ERL_PERMISSIVE_TRUST_PROXY for it.
+  //
+  // The hop count is the one thing here that cannot be checked locally — see
+  // "Verify trust proxy" in DEPLOYMENT.md for the post-deploy test. If req.ip
+  // turns out to be an internal address, raise this to 2 rather than to `true`.
   app.set("trust proxy", 1);
 
   app.use(helmet());
