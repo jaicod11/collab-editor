@@ -48,6 +48,7 @@ const EditorCore = forwardRef(function EditorCore(
     onRevisionChange,
     onSaveStateChange,
     onResync,
+    onLoadFailed,
     // A viewer's edits are rejected by the server anyway; making the surface
     // genuinely uneditable means they never type into a void.
     readOnly = false,
@@ -66,6 +67,7 @@ const EditorCore = forwardRef(function EditorCore(
     docId,
     editorRef,
     onResync,
+    onLoadFailed,
   });
 
   // ── Presence / cursors ────────────────────────────────────────────────────

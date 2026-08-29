@@ -341,6 +341,9 @@ export default function EditorPage() {
       updateActiveContent(content ?? "", revision ?? 0);
     };
     const onErr = ({ code, message }) => {
+      // useOT retries this one and reports through onLoadFailed when the
+      // retries are spent; toasting here too would fire on every attempt.
+      if (code === "LOAD_FAILED") return;
       toastRef.current.error(message);
       // The owner removed us while we had the document open. The socket has
       // already been forced out of the room server-side.
@@ -411,6 +414,15 @@ export default function EditorPage() {
     );
     // Put focus back where the user was working.
     editorCoreRef.current?.focus?.();
+  }, []);
+
+  // Every retry of the join failed. There is no document to show and no
+  // recovery left in the client's hands, so say so plainly rather than leaving
+  // the editor sitting empty and idle.
+  const handleLoadFailed = useCallback(() => {
+    toastRef.current.error(
+      "Could not load this document. The server may be unavailable — reload to try again."
+    );
   }, []);
 
   const handleTitleChange = useCallback((val) => {
@@ -563,6 +575,7 @@ export default function EditorPage() {
               onRevisionChange={setRevision}
               onSaveStateChange={handleSaveStateChange}
               onResync={handleResync}
+              onLoadFailed={handleLoadFailed}
               readOnly={isViewer}
               className="editor-canvas-new"
             />

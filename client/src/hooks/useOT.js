@@ -149,7 +149,7 @@ function mapCaretThroughOp(offset, op) {
   return next;
 }
 
-export function useOT({ socket, docId, editorRef, onResync }) {
+export function useOT({ socket, docId, editorRef, onResync, onLoadFailed }) {
   const revisionRef = useRef(0);
   const syncRef = useRef(createSyncState());
   const prevContentRef = useRef("");
@@ -158,6 +158,11 @@ export function useOT({ socket, docId, editorRef, onResync }) {
   const loadedRef = useRef(false);
   const onResyncRef = useRef(onResync);
   onResyncRef.current = onResync;
+  const onLoadFailedRef = useRef(onLoadFailed);
+  onLoadFailedRef.current = onLoadFailed;
+  // Bookkeeping for the bounded doc:join retry — see onDocError.
+  const joinAttemptsRef = useRef(0);
+  const joinRetryTimerRef = useRef(null);
   // Set when a resync is requested, so the doc:load that answers it can be
   // distinguished from an ordinary join and reported to the user.
   const resyncPendingRef = useRef(false);
@@ -387,7 +392,33 @@ export function useOT({ socket, docId, editorRef, onResync }) {
     // TOLD it happened (onResync) rather than watching text change under them.
     const RESYNC_CODES = new Set(["OP_FAILED", "LOCK_TIMEOUT", "INVALID_OP"]);
 
+    // doc:join threw server-side, so no doc:load arrived and there is nothing
+    // to resync FROM — the editor is empty. Re-joining is the right recovery,
+    // but note the asymmetry with RESYNC_CODES: those arrive from op:submit, so
+    // re-joining is a different code path that cannot re-trigger them. This one
+    // arrives from doc:join itself, so an unbounded retry would spin against a
+    // server that is already failing. Bounded, with a linear backoff, and the
+    // caller is told when the retries are spent.
+    const MAX_JOIN_RETRIES = 3;
+    const JOIN_RETRY_BASE_MS = 800;
+
     const onDocError = ({ code }) => {
+      if (code === "LOAD_FAILED") {
+        if (joinAttemptsRef.current >= MAX_JOIN_RETRIES) {
+          console.error(`[useOT] LOAD_FAILED — gave up after ${MAX_JOIN_RETRIES} retries`);
+          onLoadFailedRef.current?.();
+          return;
+        }
+        const attempt = (joinAttemptsRef.current += 1);
+        console.warn(`[useOT] LOAD_FAILED — retrying doc:join (${attempt}/${MAX_JOIN_RETRIES})`);
+        setSaveState("saving");
+        clearTimeout(joinRetryTimerRef.current);
+        joinRetryTimerRef.current = setTimeout(() => {
+          socket.emit("doc:join", { docId });
+        }, JOIN_RETRY_BASE_MS * attempt);
+        return;
+      }
+
       if (!RESYNC_CODES.has(code)) return; // ACCESS_DENIED / NOT_FOUND: nothing to resync
       console.warn(`[useOT] ${code} — resynchronising from the server`);
       syncRef.current = createSyncState();
@@ -402,6 +433,9 @@ export function useOT({ socket, docId, editorRef, onResync }) {
       // against a document state the server is now telling us never existed.
       syncRef.current = createSyncState();
       loadedRef.current = true;
+      // The join succeeded, so a later failure gets a fresh retry budget.
+      joinAttemptsRef.current = 0;
+      clearTimeout(joinRetryTimerRef.current);
       revisionRef.current = rev;
       setLoaded(true);
       setRevision(rev);
@@ -424,6 +458,9 @@ export function useOT({ socket, docId, editorRef, onResync }) {
     socket.on("doc:error", onDocError);
 
     return () => {
+      // Without this an unmount leaves a timer that re-joins a document the
+      // user has already navigated away from.
+      clearTimeout(joinRetryTimerRef.current);
       socket.off("op:ack", onAck);
       socket.off("op:broadcast", onBroadcast);
       socket.off("doc:load", onDocLoad);

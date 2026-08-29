@@ -217,13 +217,13 @@ out.
 
 ### Tests
 
-**273 tests** across 18 files, all runnable locally:
+**283 tests** across 20 files, all runnable locally:
 
 | Package | Tests | Covers |
 |---|---:|---|
 | `shared` | 113 | Convergence sweeps, fuzz, batch/no-op handling, markdown helpers, newline behaviour, client sync bookkeeping |
-| `client` | 86 | Socket/session wiring, store rehydration on reload, share-link parsing, markdown sanitisation, PDF export naming |
-| `server` | 74 | Lock primitives, concurrent admission, persistence, history coalescing, snapshot/restore, roles, sharing, presence |
+| `client` | 94 | Socket/session wiring, the doc:join failure path, store rehydration on reload, share-link parsing, markdown sanitisation, PDF export naming |
+| `server` | 76 | Lock primitives, concurrent admission, persistence, history coalescing, snapshot/restore, roles, sharing, presence, doc:error contract |
 
 Every server suite that touches a database boots the real server against the
 local Docker stack, and refuses to run if `MONGODB_URI` or `REDIS_URL` is not

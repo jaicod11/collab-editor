@@ -207,8 +207,14 @@ module.exports = function documentHandler(io, socket, redisClient, CHANNEL_PREFI
 
       console.log(`[Socket] ${user.name} joined doc:${docId} (rev ${doc.revision})`);
     } catch (err) {
+      // The join itself failed, so no doc:load was ever sent and the client
+      // holds no content, revision or role — it is not in a degraded state, it
+      // is in no state at all. LOAD_FAILED says exactly that, so the client can
+      // retry the join rather than sitting on an empty editor. Every other
+      // doc:error here is codeless-safe because the client already has a
+      // document; this one is not.
       console.error("[documentHandler] doc:join error:", err);
-      socket.emit("doc:error", { message: "Failed to load document" });
+      socket.emit("doc:error", { code: "LOAD_FAILED", message: "Failed to load document" });
     }
   });
 
