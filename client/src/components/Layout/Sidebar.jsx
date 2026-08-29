@@ -13,6 +13,8 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useWorkspace } from "../../hooks/useWorkspace";
+import { useNotifications } from "../../hooks/useNotifications";
+import NotificationBell from "./NotificationBell";
 import { useToast } from "../UI/Toast";
 
 export const T = {
@@ -289,6 +291,7 @@ export default function Sidebar({ activeTab }) {
     const navigate = useNavigate();
     const { toast } = useToast();
     const { workspaces, loading, loadWorkspaces, createWorkspace, deleteWorkspace } = useWorkspace();
+    const notifs = useNotifications();
 
     const [modalOpen, setModalOpen] = useState(false);
     const [deleteTarget, setDeleteTarget] = useState(null);
@@ -323,6 +326,17 @@ export default function Sidebar({ activeTab }) {
                     <Icons.FilePen />
                 </div>
                 <span style={{ fontWeight: 600, fontSize: 16, color: T.fg, letterSpacing: "-.025em", fontFamily: T.font }}>CollabDocs</span>
+                <span style={{ marginLeft: "auto", display: "flex" }}>
+                    <NotificationBell
+                        notifications={notifs.notifications}
+                        unreadCount={notifs.unreadCount}
+                        loaded={notifs.loaded}
+                        loading={notifs.loading}
+                        onOpen={notifs.load}
+                        onMarkRead={notifs.markRead}
+                        onMarkAllRead={notifs.markAllRead}
+                    />
+                </span>
             </div>
 
             {/* New Document */}

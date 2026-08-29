@@ -35,6 +35,10 @@ roles, version history — exists to put the engine under realistic load.
 - **Editor / viewer roles, enforced server-side** — a viewer's `op:submit` is
   rejected by the server, not merely hidden in the UI. Role changes take effect
   on connected sockets immediately.
+- **Notifications** — a persisted, per-user feed for access requests,
+  approvals, denials, role changes and revocations. Delivered live over the
+  personal socket room so the bell updates without a refresh, and durable, so
+  it survives a reload or a missed connection.
 - **Starring**, and an **Active → Archived → Deleted** lifecycle with archive
   and trash views.
 - **PDF export** via the browser's print pipeline, with the app chrome hidden
@@ -70,6 +74,7 @@ the server, so the two sides cannot drift.
  │  op cache      │            │  Snapshots         │
  │  pub/sub       │            │  Users             │
  │  sessions      │            │  AccessRequests    │
+ │                │            │  Notifications     │
  └────────────────┘            └────────────────────┘
                     ▲
         shared/ot — imported by both sides
@@ -217,13 +222,13 @@ out.
 
 ### Tests
 
-**283 tests** across 20 files, all runnable locally:
+**296 tests** across 21 files, all runnable locally:
 
 | Package | Tests | Covers |
 |---|---:|---|
 | `shared` | 113 | Convergence sweeps, fuzz, batch/no-op handling, markdown helpers, newline behaviour, client sync bookkeeping |
 | `client` | 94 | Socket/session wiring, the doc:join failure path, store rehydration on reload, share-link parsing, markdown sanitisation, PDF export naming |
-| `server` | 76 | Lock primitives, concurrent admission, persistence, history coalescing, snapshot/restore, roles, sharing, presence, doc:error contract |
+| `server` | 89 | Lock primitives, concurrent admission, persistence, history coalescing, snapshot/restore, roles, sharing, presence, doc:error contract, notification scoping and creation |
 
 Every server suite that touches a database boots the real server against the
 local Docker stack, and refuses to run if `MONGODB_URI` or `REDIS_URL` is not
@@ -271,6 +276,14 @@ than that, so the *first* load after an idle period shows an error toast over an
 empty dashboard rather than a spinner. Reloading once the service is awake works
 normally, and you are not signed out. An open editor tab produces socket
 heartbeat traffic that should keep the service awake while it is open.
+
+**Notifications are capped at 100 per user.** Beyond that the oldest are
+trimmed as new ones arrive, and a document's notifications are deleted with the
+document. There is deliberately no time-based expiry: a TTL quietly deleting
+user-visible data on a clock nobody chose is the bug Phase 3 removed from
+version history, and the same reasoning applies here. The consequence is that a
+very active user can lose old notifications they had not read — bounded by their
+own activity rather than by elapsed time.
 
 **No E2E browser tests.** The suites cover the OT engine, the hooks and the
 server; the assembled UI is verified by hand against the checklist in
@@ -346,9 +359,10 @@ collab-editor/
 ├── server/                  # Node + Express backend
 │   ├── src/
 │   │   ├── config/          # env validation, Mongo and Redis connections
-│   │   ├── controllers/     # auth, document, share, history, workspace
+│   │   ├── controllers/     # auth, document, share, history, notification, workspace
 │   │   ├── middleware/      # JWT auth, rate limiting, error handling
-│   │   ├── models/          # User, Document, Operation, Snapshot, AccessRequest, Workspace
+│   │   ├── models/          # User, Document, Operation, Snapshot, AccessRequest,
+│   │   │                    #   Notification, Workspace
 │   │   ├── routes/
 │   │   ├── services/        # otService, lockService, sessionService, snapshotService, …
 │   │   └── socket/          # socketServer, document/presence handlers, rooms

@@ -19,6 +19,7 @@
 
 const Document = require("../models/Document");
 const redisService = require("../services/redisService");
+const notificationService = require("../services/notificationService");
 const documentService = require("../services/documentService");
 
 // ── GET /api/documents ────────────────────────────────────────────────────────
@@ -203,6 +204,11 @@ exports.remove = async (req, res, next) => {
     if (!doc) return res.status(404).json({ message: "Document not found or access denied" });
 
     await redisService.invalidateDocCache(req.params.id);
+
+    // The document is gone for good, so every notification linking to it would
+    // now lead nowhere. This is half of the notification retention policy — the
+    // other half is the per-user cap in notificationService. There is no TTL.
+    await notificationService.cascadeForDocument(req.params.id);
 
     res.json({ message: "Document deleted" });
   } catch (err) {

@@ -26,6 +26,8 @@ const Document = require("../models/Document");
 const AccessRequest = require("../models/AccessRequest");
 const documentService = require("../services/documentService");
 const redisService = require("../services/redisService");
+const notificationService = require("../services/notificationService");
+const Notification = require("../models/Notification");
 
 const { ROLES } = Document;
 const { STATUS } = AccessRequest;
@@ -157,6 +159,20 @@ exports.requestAccess = async (req, res, next) => {
       { upsert: true, new: true, setDefaultsOnInsert: true }
     );
 
+    // The owner's only other signal that someone is waiting is opening the
+    // Share modal and looking. Notify them instead.
+    await notificationService.create(
+      {
+        userId: doc.owner.toString(),
+        type: Notification.TYPES.ACCESS_REQUESTED,
+        docId: doc._id.toString(),
+        docTitle: doc.title,
+        actorName: req.user.name,
+        role: requestedRole,
+      },
+      req.app.get("notifyUser")
+    );
+
     res.status(201).json({ state: "pending", requestedRole });
   } catch (err) {
     // Concurrent first-requests can race the unique index; that is success.
@@ -222,6 +238,22 @@ exports.approveRequest = async (req, res, next) => {
       role,
     });
 
+    // Approval is also the ONLY path that adds a collaborator — there is no
+    // direct add-collaborator endpoint — so "you were added as a collaborator"
+    // and "your request was approved" are the same moment, and get one row
+    // rather than two saying the same thing.
+    await notificationService.create(
+      {
+        userId: request.userId.toString(),
+        type: Notification.TYPES.ACCESS_APPROVED,
+        docId,
+        docTitle: doc?.title ?? "Untitled Document",
+        actorName: req.user.name,
+        role,
+      },
+      req.app.get("notifyUser")
+    );
+
     res.json({ approved: true, userId: request.userId, role });
   } catch (err) {
     next(err);
@@ -245,6 +277,18 @@ exports.denyRequest = async (req, res, next) => {
     await request.save();
 
     req.app.get("notifyUser")?.(request.userId.toString(), "access:denied", { docId });
+
+    const deniedDoc = await Document.findById(docId).select("title").lean();
+    await notificationService.create(
+      {
+        userId: request.userId.toString(),
+        type: Notification.TYPES.ACCESS_DENIED,
+        docId,
+        docTitle: deniedDoc?.title ?? "Untitled Document",
+        actorName: req.user.name,
+      },
+      req.app.get("notifyUser")
+    );
 
     res.json({ denied: true });
   } catch (err) {
@@ -285,6 +329,18 @@ exports.setCollaboratorRole = async (req, res, next) => {
     // them in the room; `role` tells them which way it went.
     req.app.get("changeDocumentAccess")?.(docId, userId, { disconnect: false, role });
 
+    await notificationService.create(
+      {
+        userId,
+        type: Notification.TYPES.ROLE_CHANGED,
+        docId,
+        docTitle: doc?.title ?? "Untitled Document",
+        actorName: req.user.name,
+        role,
+      },
+      req.app.get("notifyUser")
+    );
+
     res.json({ userId, role });
   } catch (err) {
     next(err);
@@ -316,6 +372,20 @@ exports.removeCollaborator = async (req, res, next) => {
     // Force them out of the room and invalidate the cached grant their open
     // socket is holding.
     req.app.get("changeDocumentAccess")?.(docId, userId, { disconnect: true });
+
+    // Deliberately keeps the docId: the row is a record of what happened, and
+    // the client renders a revocation as unlinked text rather than a link into
+    // a document the user can no longer open.
+    await notificationService.create(
+      {
+        userId,
+        type: Notification.TYPES.ACCESS_REVOKED,
+        docId,
+        docTitle: doc?.title ?? "Untitled Document",
+        actorName: req.user.name,
+      },
+      req.app.get("notifyUser")
+    );
 
     res.json({ removed: true, userId });
   } catch (err) {

@@ -24,6 +24,7 @@ const authRoutes = require("./routes/authRoutes");
 const documentRoutes = require("./routes/documentRoutes");
 const historyRoutes = require("./routes/historyRoutes");
 const workspaceRoutes = require("./routes/workspaceRoutes"); // ← new
+const notificationRoutes = require("./routes/notificationRoutes");
 const errorHandler = require("./middleware/errorHandler");
 const rateLimiter = require("./middleware/rateLimiter");
 
@@ -93,6 +94,7 @@ async function bootstrap() {
   app.use("/api/documents", documentRoutes);
   app.use("/api/history", historyRoutes);
   app.use("/api/workspaces", workspaceRoutes); // ← new
+  app.use("/api/notifications", notificationRoutes);
 
   // ── Health check ──────────────────────────────────────────────────────────
   // Reports whether the DEPENDENCIES are reachable, not merely that the process
