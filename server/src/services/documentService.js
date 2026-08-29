@@ -163,6 +163,12 @@ function toCanonical(doc) {
         // Never cache the share token: the cached document is served to every
         // collaborator by getOne, and the token is owner-only.
         shareEnabled: Boolean(doc.shareEnabled),
+        // The id only, never a populated name. The client resolves names from
+        // /api/workspaces, which is already scoped to workspaces the caller
+        // owns or belongs to — so a collaborator who is not a member of the
+        // owner's workspace gets an id they cannot resolve, and renders
+        // nothing, rather than being shown the workspace's name.
+        workspace: doc.workspace ? doc.workspace.toString() : null,
         statusChangedBy: doc.statusChangedBy ? person(doc.statusChangedBy) : null,
         statusChangedAt: doc.statusChangedAt ?? null,
         createdAt: doc.createdAt ?? null,

@@ -30,8 +30,9 @@
  */
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useDocument } from "../hooks/useDocument";
+import { useWorkspace } from "../hooks/useWorkspace";
 import { useToast } from "../components/UI/Toast";
 import { useAuthStore } from "../store/authSlice";
 import Sidebar, { T, Icons } from "../components/Layout/Sidebar";
@@ -90,7 +91,7 @@ function MenuItemRow({ icon, label, onClick, danger, muted }) {
 }
 
 // ─── Three-dot context menu (rendered via portal — see PortalMenu.jsx) ───────
-function ContextMenu({ doc, anchorRef, onClose, onOpen, onRename, onDuplicate, onArchive, onMoveToTrash, onToggleStar }) {
+function ContextMenu({ doc, anchorRef, onClose, onOpen, onRename, onDuplicate, onArchive, onMoveToTrash, onToggleStar, onMoveToWorkspace }) {
     const { toast } = useToast();
     // Server-backed: a star follows the user, not the browser.
     const starred = Boolean(doc.starred);
@@ -122,6 +123,10 @@ function ContextMenu({ doc, anchorRef, onClose, onOpen, onRename, onDuplicate, o
                 <MenuItemRow icon="edit" label="Rename" onClick={() => { onRename(doc); onClose(); }} />
                 <MenuItemRow icon="content_copy" label="Duplicate" onClick={() => { onDuplicate(doc); onClose(); }} />
                 <MenuItemRow icon="link" label="Copy link" onClick={copyLink} />
+                {onMoveToWorkspace && (
+                    <MenuItemRow icon="folder" label="Move to workspace"
+                        onClick={() => { onMoveToWorkspace(doc); onClose(); }} />
+                )}
                 <MenuItemRow
                     icon={starred ? "star_off" : "star"}
                     label={starred ? "Remove from starred" : "Add to starred"}
@@ -175,6 +180,81 @@ function RenameModal({ doc, onSave, onClose }) {
     );
 }
 
+// ─── Move-to-workspace picker ─────────────────────────────────────────────────
+// Only offered on documents this user OWNS: the server rejects anyone else with
+// a 404, so showing the action to a collaborator would be an interface promising
+// something that cannot happen.
+function MoveToWorkspaceModal({ doc, workspaces, onSave, onClose }) {
+    const current = doc.workspace ?? null;
+
+    const Option = ({ id, label, swatch }) => {
+        const [hov, setHov] = useState(false);
+        const selected = current === id;
+        return (
+            <button
+                onClick={() => { onSave(doc, id); onClose(); }}
+                onMouseEnter={() => setHov(true)}
+                onMouseLeave={() => setHov(false)}
+                style={{
+                    width: "100%", display: "flex", alignItems: "center", gap: 10,
+                    padding: "9px 10px", borderRadius: 6, textAlign: "left",
+                    background: selected ? T.sec : hov ? T.muted : "none",
+                    border: "none", cursor: "pointer",
+                    color: selected ? T.primary : T.fg, fontSize: 13, fontFamily: T.font,
+                }}
+            >
+                {swatch}
+                <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+                {selected && <span style={{ fontSize: 11, color: T.primary }}>Current</span>}
+            </button>
+        );
+    };
+
+    return (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center" }}
+            onClick={onClose}>
+            <div onClick={(e) => e.stopPropagation()}
+                style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: 24, width: 400, boxShadow: "0 20px 60px rgba(0,0,0,.6)" }}>
+                <h3 style={{ fontSize: 16, fontWeight: 600, color: T.fg, marginBottom: 4, fontFamily: T.font }}>Move to workspace</h3>
+                <p style={{ fontSize: 12, color: T.mutedFg, margin: "0 0 14px", fontFamily: T.font }}>
+                    A workspace organises your documents. It does not change who can open this one.
+                </p>
+
+                <div style={{ maxHeight: 260, overflowY: "auto", display: "flex", flexDirection: "column", gap: 2 }}>
+                    <Option
+                        id={null}
+                        label="Unfiled"
+                        swatch={<span style={{ width: 18, height: 18, borderRadius: 4, border: `1px dashed ${T.border}`, display: "inline-block", flexShrink: 0 }} />}
+                    />
+                    {workspaces.length === 0 && (
+                        <p style={{ fontSize: 12, color: T.mutedFg, padding: "14px 10px", margin: 0, fontFamily: T.font }}>
+                            You have no workspaces yet. Create one from the sidebar.
+                        </p>
+                    )}
+                    {workspaces.map((w) => {
+                        const id = w._id ?? w.id;
+                        return (
+                            <Option
+                                key={id}
+                                id={id}
+                                label={w.name}
+                                swatch={<span style={{ width: 18, height: 18, borderRadius: 4, background: w.color || T.primary, display: "inline-block", flexShrink: 0 }} />}
+                            />
+                        );
+                    })}
+                </div>
+
+                <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
+                    <button type="button" onClick={onClose}
+                        style={{ padding: "8px 16px", background: "none", border: `1px solid ${T.border}`, color: T.mutedFg, borderRadius: 6, fontSize: 13, cursor: "pointer", fontFamily: T.font }}>
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
 // ─── Move-to-Trash confirm modal ──────────────────────────────────────────────
 function MoveToTrashModal({ doc, onConfirm, onClose }) {
     return (
@@ -203,7 +283,7 @@ function MoveToTrashModal({ doc, onConfirm, onClose }) {
 }
 
 // ─── Document table row ───────────────────────────────────────────────────────
-function DocRow({ doc, index, onOpen, onRename, onDuplicate, onArchive, onMoveToTrash, onToggleStar }) {
+function DocRow({ doc, index, onOpen, onRename, onDuplicate, onArchive, onMoveToTrash, onToggleStar, onMoveToWorkspace }) {
     const [hov, setHov] = useState(false);
     const [menuOpen, setMenuOpen] = useState(false);
     const btnRef = useRef(null);
@@ -276,6 +356,7 @@ function DocRow({ doc, index, onOpen, onRename, onDuplicate, onArchive, onMoveTo
                         onArchive={onArchive}
                         onMoveToTrash={onMoveToTrash}
                         onToggleStar={onToggleStar}
+                        onMoveToWorkspace={onMoveToWorkspace}
                     />
                 )}
             </div>
@@ -333,7 +414,13 @@ export default function MyDocumentsPage() {
     const { toast } = useToast();
     const user = useAuthStore((s) => s.user);
     const logout = useAuthStore((s) => s.logout);
-    const { loading, loadDocuments, createDoc, updateTitle } = useDocument();
+    const { loading, loadDocuments, createDoc, updateTitle, setDocumentWorkspace } = useDocument();
+    const { workspaces, loadWorkspaces } = useWorkspace();
+
+    // The workspace view is this page with ?workspace=<id|unfiled>, so the
+    // table, row menus and sorting are shared rather than duplicated.
+    const [searchParams] = useSearchParams();
+    const workspaceParam = searchParams.get("workspace");
 
     const [documents, setDocuments] = useState([]);
     const [search, setSearch] = useState("");
@@ -341,6 +428,7 @@ export default function MyDocumentsPage() {
     const [profileOpen, setProfileOpen] = useState(false);
     const [renameDoc, setRenameDoc] = useState(null);
     const [trashTarget, setTrashTarget] = useState(null); // doc pending "Move to Trash" confirm
+    const [workspaceTarget, setWorkspaceTarget] = useState(null); // doc pending "Move to workspace"
 
     // loadDocuments is useCallback'd over zustand store actions, which keep a
     // stable identity, so declaring the dependency does not make this re-run.
@@ -351,10 +439,23 @@ export default function MyDocumentsPage() {
     toastRef.current = toast;
 
     useEffect(() => {
-        loadDocuments()
+        loadDocuments("all", "", workspaceParam ?? undefined)
             .then((data) => { if (Array.isArray(data?.documents)) setDocuments(data.documents); })
             .catch(() => toastRef.current.error("Could not load your documents"));
-    }, [loadDocuments]);
+    }, [loadDocuments, workspaceParam]);
+
+    // Needed both to name the current view and to populate the "Move to
+    // workspace" picker.
+    useEffect(() => { loadWorkspaces(); }, [loadWorkspaces]);
+
+    const activeWorkspace = useMemo(
+        () => workspaces.find((w) => (w._id ?? w.id) === workspaceParam) ?? null,
+        [workspaces, workspaceParam]
+    );
+
+    const heading = workspaceParam === "unfiled"
+        ? "Unfiled"
+        : activeWorkspace?.name ?? (workspaceParam ? "Workspace" : "All Documents");
 
     // Filter + sort
     const filtered = useMemo(() => {
@@ -365,6 +466,33 @@ export default function MyDocumentsPage() {
         if (sortBy === "Last edited") docs.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
         return docs;
     }, [documents, search, sortBy]);
+
+    // Filing is owner-only server-side, so the action is only offered on
+    // documents this user owns rather than shown and then rejected.
+    const canFile = useCallback(
+        (doc) => Boolean(user?.id) && String(doc.owner?._id ?? doc.owner) === String(user.id),
+        [user]
+    );
+
+    const handleMoveToWorkspace = useCallback(async (doc, workspaceId) => {
+        const updated = await setDocumentWorkspace(docPk(doc), workspaceId);
+        if (!updated) return toastRef.current.error("Could not move the document");
+
+        // Reflect it without a refetch, and drop the row when the current view
+        // is a workspace the document just left.
+        setDocuments((prev) => {
+            const next = prev.map((d) => (docPk(d) === docPk(doc) ? { ...d, workspace: workspaceId ?? null } : d));
+            if (!workspaceParam) return next;
+            const stillHere = (d) =>
+                workspaceParam === "unfiled" ? d.workspace == null : d.workspace === workspaceParam;
+            return next.filter((d) => (docPk(d) === docPk(doc) ? stillHere({ ...d, workspace: workspaceId ?? null }) : true));
+        });
+
+        const name = workspaceId
+            ? (workspaces.find((w) => (w._id ?? w.id) === workspaceId)?.name ?? "workspace")
+            : null;
+        toastRef.current.success(name ? `Moved to "${name}"` : "Removed from workspace");
+    }, [setDocumentWorkspace, workspaceParam, workspaces]);
 
     const handleOpen = useCallback((doc) => navigate(`/editor/${docPk(doc)}`), [navigate]);
 
@@ -431,7 +559,7 @@ export default function MyDocumentsPage() {
                 <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 36 }}>
                     <div>
                         <p style={{ fontSize: 11, fontWeight: 500, color: T.primary, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 6 }}>MY DOCUMENTS</p>
-                        <h1 style={{ fontSize: 30, fontWeight: 600, color: T.fg, letterSpacing: "-.025em", fontFamily: T.font }}>All Documents</h1>
+                        <h1 style={{ fontSize: 30, fontWeight: 600, color: T.fg, letterSpacing: "-.025em", fontFamily: T.font }}>{heading}</h1>
                     </div>
 
                     {/* Right controls */}
@@ -508,6 +636,7 @@ export default function MyDocumentsPage() {
                                 onArchive={handleArchive}
                                 onMoveToTrash={(d) => setTrashTarget(d)}
                                 onToggleStar={handleToggleStar}
+                                onMoveToWorkspace={canFile(doc) ? ((d) => setWorkspaceTarget(d)) : undefined}
                             />
                         ))
                     )}
@@ -524,6 +653,14 @@ export default function MyDocumentsPage() {
             {/* Modals */}
             {renameDoc && <RenameModal doc={renameDoc} onSave={handleRename} onClose={() => setRenameDoc(null)} />}
             {trashTarget && <MoveToTrashModal doc={trashTarget} onConfirm={handleMoveToTrash} onClose={() => setTrashTarget(null)} />}
+            {workspaceTarget && (
+                <MoveToWorkspaceModal
+                    doc={workspaceTarget}
+                    workspaces={workspaces}
+                    onSave={handleMoveToWorkspace}
+                    onClose={() => setWorkspaceTarget(null)}
+                />
+            )}
 
             <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }

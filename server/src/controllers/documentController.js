@@ -20,13 +20,66 @@
 const Document = require("../models/Document");
 const redisService = require("../services/redisService");
 const notificationService = require("../services/notificationService");
+const Workspace = require("../models/Workspace");
+const mongoose = require("mongoose");
 const documentService = require("../services/documentService");
+
+/**
+ * ── The filing rule ──────────────────────────────────────────────────────────
+ * A workspace is a LABEL, never a grant.
+ *
+ * Who may file: the document's OWNER only, and only into a workspace they own
+ * or are a member of. Unfiling (null) is always allowed for the owner. The
+ * owner-only half is enforced structurally — every write path here already
+ * filters on `owner: req.user.id` — and this function enforces the other half.
+ *
+ * Why not collaborators: the workspace is the owner's filing system. A
+ * collaborator moving someone else's document into their own workspace makes
+ * "whose filing is this?" unanswerable, and would let anyone shared with pull a
+ * document into a workspace its owner cannot see.
+ *
+ * What it deliberately does NOT do: grant access. Workspace membership gives no
+ * rights over the documents filed in it — `list` applies the workspace filter IN
+ * ADDITION to the owner/collaborator $or, so filtering can only ever narrow what
+ * the caller could already see. A document shared with someone who is not a
+ * member of its workspace stays fully visible to them under Shared with Me;
+ * they simply cannot use that workspace as a filter, and the client resolves
+ * workspace NAMES from /api/workspaces (already scoped to owner/member), so a
+ * non-member holding an unresolvable id sees nothing rather than a leaked name.
+ *
+ * @returns {Promise<boolean>} whether `userId` may file into `workspaceId`
+ */
+async function canFileInto(workspaceId, userId) {
+  if (!mongoose.Types.ObjectId.isValid(workspaceId)) return false;
+  const found = await Workspace.exists({
+    _id: workspaceId,
+    $or: [{ owner: userId }, { members: userId }],
+  });
+  return Boolean(found);
+}
+
+/**
+ * Normalise an inbound `workspace` value to what should be stored.
+ * @returns {{ ok: true, value: string|null } | { ok: false, message: string }}
+ */
+async function resolveWorkspace(raw, userId) {
+  // null / "" / "none" / "unfiled" all mean "take it out of any workspace".
+  if (raw === null || raw === "" || raw === "none" || raw === "unfiled") {
+    return { ok: true, value: null };
+  }
+  if (!(await canFileInto(raw, userId))) {
+    // One message for "no such workspace" and "not yours", so the endpoint
+    // cannot be used to discover which workspace ids exist.
+    return { ok: false, message: "Workspace not found or access denied" };
+  }
+  return { ok: true, value: raw };
+}
 
 // ── GET /api/documents ────────────────────────────────────────────────────────
 exports.list = async (req, res, next) => {
   try {
     const userId = req.user.id;
-    const { filter = "all", search = "" } = req.query;
+    const { filter = "all", search = "", workspace } = req.query;
 
     let query = {
       $or: [{ owner: userId }, { "collaborators.user": userId }],
@@ -50,6 +103,23 @@ exports.list = async (req, res, next) => {
       query.status = "Deleted";
     } else {
       query.status = "Active";
+    }
+
+    // ── Workspace scoping ─────────────────────────────────────────────────
+    // Applied ON TOP of the access filter above, never instead of it, so a
+    // workspace can only narrow what this user could already see. Note there is
+    // deliberately no membership check here: it would add a query and change
+    // nothing, because the access filter already bounds the result to this
+    // user's own documents.
+    if (workspace !== undefined && workspace !== "") {
+      if (workspace === "unfiled" || workspace === "none" || workspace === "null") {
+        query.workspace = null;
+      } else if (mongoose.Types.ObjectId.isValid(workspace)) {
+        query.workspace = new mongoose.Types.ObjectId(workspace);
+      } else {
+        // A malformed id would otherwise CastError into a 500.
+        return res.status(400).json({ message: "Invalid workspace id" });
+      }
     }
 
     if (search.trim()) {
@@ -86,13 +156,24 @@ exports.list = async (req, res, next) => {
 // ── POST /api/documents ───────────────────────────────────────────────────────
 exports.create = async (req, res, next) => {
   try {
-    const { title = "Untitled Document", content = "" } = req.body;
+    const { title = "Untitled Document", content = "", workspace } = req.body;
+
+    // The creator is the owner, so the filing rule reduces to "is this a
+    // workspace you belong to". Omitting it creates an unfiled document, which
+    // is a perfectly ordinary end state and not a gap to be filled later.
+    let workspaceId = null;
+    if (workspace !== undefined) {
+      const resolved = await resolveWorkspace(workspace, req.user.id);
+      if (!resolved.ok) return res.status(404).json({ message: resolved.message });
+      workspaceId = resolved.value;
+    }
 
     const doc = await Document.create({
       title,
       content,
       revision: 0,
       owner: req.user.id,
+      workspace: workspaceId,
       status: "Active",
     });
 
@@ -133,9 +214,17 @@ exports.getOne = async (req, res, next) => {
 // Used for: rename (title), status changes (Active/Archived/Deleted restore-or-move)
 exports.update = async (req, res, next) => {
   try {
-    const { title, status } = req.body;
+    const { title, status, workspace } = req.body;
     const updates = {};
     if (title !== undefined) updates.title = title;
+
+    // Owner-only comes free: the findOneAndUpdate below filters on
+    // `owner: req.user.id`, so a collaborator's PATCH matches nothing and 404s.
+    if (workspace !== undefined) {
+      const resolved = await resolveWorkspace(workspace, req.user.id);
+      if (!resolved.ok) return res.status(404).json({ message: resolved.message });
+      updates.workspace = resolved.value;
+    }
     if (status !== undefined) {
       if (!["Active", "Archived", "Deleted"].includes(status)) {
         return res.status(400).json({ message: "Invalid status value" });

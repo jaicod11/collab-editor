@@ -18,11 +18,16 @@ export function useDocument() {
   const [error, setError] = useState(null);
 
   // ── Load all documents ────────────────────────────────────────────────────
-  const loadDocuments = useCallback(async (filter = "all", search = "") => {
+  // `workspace` is an id, or the literal "unfiled" for documents in none. It is
+  // omitted entirely when not filtering, so the unfiltered query keeps hitting
+  // the index it already had.
+  const loadDocuments = useCallback(async (filter = "all", search = "", workspace) => {
     setLoading(true);
     setError(null);
     try {
-      const { data } = await api.get("/documents", { params: { filter, search } });
+      const params = { filter, search };
+      if (workspace) params.workspace = workspace;
+      const { data } = await api.get("/documents", { params });
       setDocuments(data.documents);
       return data;
     } catch (err) {
@@ -35,9 +40,11 @@ export function useDocument() {
   // ── Create a new document ─────────────────────────────────────────────────
   // `content` is optional — pass it when duplicating an existing document
   // or creating from a template. Defaults to an empty string for a blank doc.
-  const createDoc = useCallback(async (title = "Untitled Document", content = "") => {
+  const createDoc = useCallback(async (title = "Untitled Document", content = "", workspace = null) => {
     try {
-      const { data } = await api.post("/documents", { title, content });
+      const body = { title, content };
+      if (workspace) body.workspace = workspace;
+      const { data } = await api.post("/documents", body);
       addDocument(data);
       return data;
     } catch (err) {
@@ -53,6 +60,21 @@ export function useDocument() {
       return data;
     } catch (err) {
       setError(err.response?.data?.message ?? "Failed to update title");
+    }
+  }, []);
+
+  // ── File a document into a workspace (or out of one) ──────────────────────
+  // Owner-only, enforced server-side: a collaborator's PATCH matches nothing
+  // and comes back 404. Pass null to unfile.
+  const setDocumentWorkspace = useCallback(async (docId, workspaceId) => {
+    try {
+      const { data } = await api.patch(`/documents/${docId}`, {
+        workspace: workspaceId ?? null,
+      });
+      return data;
+    } catch (err) {
+      setError(err.response?.data?.message ?? "Failed to move document");
+      return null;
     }
   }, []);
 
@@ -86,6 +108,7 @@ export function useDocument() {
     createDoc,
     updateTitle,
     updateStatus,
+    setDocumentWorkspace,
     deleteDoc,
   };
 }

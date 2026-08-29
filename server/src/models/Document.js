@@ -29,6 +29,23 @@ const documentSchema = new mongoose.Schema(
     // not enforce. The role is now stored and checked server-side.
     collaborators: [collaboratorSchema],
 
+    // ── Filing ─────────────────────────────────────────────────────────────
+    // Optional, and null is a first-class value, not a missing one: every
+    // document that existed before workspaces had none, and "unfiled" stays a
+    // legitimate resting place rather than a state to be migrated out of.
+    //
+    // This is a LABEL, never a grant. Being a member of a workspace gives no
+    // access to the documents filed in it — documentController.list applies the
+    // workspace filter IN ADDITION to the owner/collaborator $or, so it can
+    // only ever narrow what the caller could already see. Only the document's
+    // owner may set it (see shareController's sibling rule for roles), and only
+    // to a workspace they own or belong to.
+    workspace: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Workspace",
+      default: null,
+    },
+
     // ── Share by link ──────────────────────────────────────────────────────
     // The token grants the ability to REQUEST access. It is never itself
     // access: resolving it returns title and owner name only, and joining
@@ -82,6 +99,25 @@ documentSchema.index({ owner: 1, status: 1, updatedAt: -1 });
 // element itself to `.user`. Without this the dashboard's $or branch would
 // silently fall back to a collection scan.
 documentSchema.index({ "collaborators.user": 1, status: 1, updatedAt: -1 });
+
+// ── Workspace-filtered variants ──────────────────────────────────────────────
+// Added ALONGSIDE the two above rather than replacing them. Folding `workspace`
+// into the existing indexes would have broken the UNFILTERED dashboard query:
+// with an unconstrained field sitting between `owner` and `status`, the planner
+// can no longer walk `updatedAt` in order, and the query that runs on every
+// dashboard load picks up an in-memory SORT. Measured on 5000 documents, the
+// filtered query goes 1488 docs examined -> 100 for 100 returned (14.9x -> 1.0x)
+// with these present, and the unfiltered query stays at 1.0x.
+//
+// `workspace` sits after the access field and before status/updatedAt for the
+// same equality-then-sort reason as the others. Both $or branches need their
+// own, because MongoDB evaluates each branch independently.
+//
+// The cost is two more indexes carrying `updatedAt`, which every op:submit
+// touches. That is a real write amplification and the reason this is two
+// targeted indexes rather than one per filter combination.
+documentSchema.index({ owner: 1, workspace: 1, status: 1, updatedAt: -1 });
+documentSchema.index({ "collaborators.user": 1, workspace: 1, status: 1, updatedAt: -1 });
 
 // Serves filter=starred: "documents this user starred, by recency". Same
 // equality-then-sort shape as the owner/collaborator indexes above.

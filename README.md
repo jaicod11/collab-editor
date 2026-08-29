@@ -39,6 +39,10 @@ roles, version history — exists to put the engine under realistic load.
   approvals, denials, role changes and revocations. Delivered live over the
   personal socket room so the bell updates without a refresh, and durable, so
   it survives a reload or a missed connection.
+- **Workspaces** — named, colour-coded groups documents can be filed into,
+  with a per-workspace view and an "Unfiled" one. A workspace is a *label, not
+  a grant*: filing changes nothing about who can open a document, and the
+  workspace filter can only narrow what you could already see.
 - **Starring**, and an **Active → Archived → Deleted** lifecycle with archive
   and trash views.
 - **PDF export** via the browser's print pipeline, with the app chrome hidden
@@ -202,6 +206,38 @@ attributed document model (a Quill delta or ProseMirror step), plus a matching
 transform and storage format. That is a rewrite of the sync layer, not a change
 in the view.
 
+### Workspaces are a label, not a grant
+
+The obvious way to build workspaces turns them into a second, weaker permission
+system: file a document into a shared workspace and everyone in it can suddenly
+read it. That is a privilege-escalation path hiding inside an organisation
+feature, so the rule here is the opposite one.
+
+**Only a document's owner may file it**, and only into a workspace they own or
+belong to — enforced structurally, since every write path already filters on
+`owner: req.user.id`, so a collaborator's PATCH matches nothing. A workspace
+they do not belong to and a workspace that does not exist return the *same*
+404, so the endpoint cannot be used to discover which workspace ids are real.
+
+**Membership grants nothing.** `documentController.list` applies the workspace
+filter *in addition* to the owner/collaborator `$or`, never instead of it, so
+filtering can only ever narrow the caller's own set. A document shared with
+someone outside its workspace stays fully visible to them under Shared with Me;
+they simply cannot filter by that workspace. Workspace *names* are never
+returned with a document either — the client resolves them from
+`/api/workspaces`, which is already scoped, so a non-member holding an
+unresolvable id renders nothing rather than seeing a leaked name.
+
+**Deleting a workspace unfiles its documents**, it does not delete them and does
+not leave dangling references. Blocking deletion while non-empty was the
+alternative; it was rejected because "no workspace" is already a valid resting
+state, so there is no reason to make tidying up a chore.
+
+The security half of this is covered from the outside in
+[`workspaces.test.js`](server/test/workspaces.test.js): a user who is a member
+of a workspace but *not* a collaborator on a document filed into it must see
+nothing — not in a list, not through the filter, not by direct fetch.
+
 ### Authentication
 
 JWTs are signed with a `tokenVersion` claim, and the counter lives on the user
@@ -222,13 +258,13 @@ out.
 
 ### Tests
 
-**296 tests** across 21 files, all runnable locally:
+**307 tests** across 22 files, all runnable locally:
 
 | Package | Tests | Covers |
 |---|---:|---|
 | `shared` | 113 | Convergence sweeps, fuzz, batch/no-op handling, markdown helpers, newline behaviour, client sync bookkeeping |
 | `client` | 94 | Socket/session wiring, the doc:join failure path, store rehydration on reload, share-link parsing, markdown sanitisation, PDF export naming |
-| `server` | 89 | Lock primitives, concurrent admission, persistence, history coalescing, snapshot/restore, roles, sharing, presence, doc:error contract, notification scoping and creation |
+| `server` | 100 | Lock primitives, concurrent admission, persistence, history coalescing, snapshot/restore, roles, sharing, presence, doc:error contract, notification scoping, workspace filing and filtering |
 
 Every server suite that touches a database boots the real server against the
 local Docker stack, and refuses to run if `MONGODB_URI` or `REDIS_URL` is not
@@ -264,11 +300,6 @@ asynchronously, or a separate collection refreshed on the snapshot cadence).
 
 **Plain text with markdown, not WYSIWYG** — see
 [above](#why-the-editor-is-plain-text) for why, and what changing it would cost.
-
-**Workspaces do not organise documents yet.** They exist as named, colour-coded
-groups with an owner and members, with full CRUD and a sidebar UI — but
-`Document` has no workspace reference and no document query filters by one. The
-feature is the container, not the filing.
 
 **Cold starts on the free tier.** Render spins the backend down after 15 minutes
 idle; the next request takes 30–60 seconds. The client's HTTP timeout is shorter

@@ -15,11 +15,12 @@
  *  - "Cancel" — goes back
  */
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "../components/UI/Toast";
 import { useAuthStore } from "../store/authSlice";
 import Sidebar, { T, Icons } from "../components/Layout/Sidebar";
+import { useWorkspace } from "../hooks/useWorkspace";
 import api from "../services/api";
 
 // ─── Category tag colors ──────────────────────────────────────────────────────
@@ -241,10 +242,17 @@ export default function NewDocumentPage() {
 
     const [selectedTemplate, setSelectedTemplate] = useState(TEMPLATES[0]);
     const [docTitle, setDocTitle] = useState("");
+    // Phase 6 deleted the workspace dropdown that used to sit here because it
+    // was decorative — hardcoded options that went nowhere. It is back only
+    // now that Document has a workspace field and the list can filter on it.
+    const { workspaces, loadWorkspaces } = useWorkspace();
+    const [workspaceId, setWorkspaceId] = useState("");
     const [activeFilter, setActiveFilter] = useState("All Templates");
     const [creating, setCreating] = useState(false);
     const [profileOpen, setProfileOpen] = useState(false);
     const fileInputRef = useRef(null);
+
+    useEffect(() => { loadWorkspaces(); }, [loadWorkspaces]);
 
     // Filter templates
     const visibleTemplates = activeFilter === "All Templates"
@@ -259,13 +267,16 @@ export default function NewDocumentPage() {
             const { data } = await api.post("/documents", {
                 title,
                 content: selectedTemplate.content,
+                // Omitted entirely when unset, so an unfiled document is
+                // created rather than one filed into "".
+                ...(workspaceId ? { workspace: workspaceId } : {}),
             });
             navigate(`/editor/${data._id ?? data.id}`);
         } catch {
             toast.error("Failed to create document");
             setCreating(false);
         }
-    }, [docTitle, selectedTemplate, navigate, toast]);
+    }, [docTitle, selectedTemplate, navigate, toast, workspaceId]);
 
     // Import from file
     const handleImport = useCallback((e) => {
@@ -276,12 +287,15 @@ export default function NewDocumentPage() {
             const content = ev.target.result ?? "";
             const title = file.name.replace(/\.(txt|md)$/, "") || "Imported Document";
             try {
-                const { data } = await api.post("/documents", { title, content });
+                const { data } = await api.post("/documents", {
+                    title, content,
+                    ...(workspaceId ? { workspace: workspaceId } : {}),
+                });
                 navigate(`/editor/${data._id ?? data.id}`);
             } catch { toast.error("Failed to import file"); }
         };
         reader.readAsText(file);
-    }, [navigate, toast]);
+    }, [navigate, toast, workspaceId]);
 
     return (
         <div style={{ display: "flex", minHeight: "100vh", background: T.bg, fontFamily: T.font, color: T.fg }}>
@@ -341,6 +355,29 @@ export default function NewDocumentPage() {
                             />
                         </div>
 
+                        {/* Workspace selector — real options from /api/workspaces.
+                            Hidden entirely when the user has none, rather than
+                            rendering an empty control that implies a feature
+                            they have not set up. */}
+                        {workspaces.length > 0 && (
+                            <div style={{ display: "flex", alignItems: "center", gap: 10, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 7, padding: "10px 14px", minWidth: 210 }}>
+                                <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={T.mutedFg} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+                                </svg>
+                                <select
+                                    value={workspaceId}
+                                    onChange={(e) => setWorkspaceId(e.target.value)}
+                                    aria-label="Workspace"
+                                    style={{ background: "none", border: "none", outline: "none", color: workspaceId ? T.fg : T.mutedFg, fontSize: 14, fontFamily: T.font, width: "100%", cursor: "pointer" }}
+                                >
+                                    <option value="">No workspace</option>
+                                    {workspaces.map((w) => {
+                                        const id = w._id ?? w.id;
+                                        return <option key={id} value={id}>{w.name}</option>;
+                                    })}
+                                </select>
+                            </div>
+                        )}
                     </div>
 
                     {/* Category filter pills */}

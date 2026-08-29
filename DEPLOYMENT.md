@@ -262,6 +262,12 @@ this is what makes the index changes real. It:
 - drops the old `{title, content}` text index, which re-tokenised the **entire
   document body on every keystroke**;
 - adds the `collaborators.user`, `starredBy` and `shareToken` indexes;
+- adds the two workspace-filtered dashboard indexes
+  (`{owner, workspace, status, updatedAt}` and the `collaborators.user`
+  equivalent). Measured on 5000 documents, that query examines 14.9 documents
+  per document returned without them and 1.0 with them. They are additive — the
+  unfiltered indexes stay, because folding `workspace` into them gives the
+  unfiltered dashboard an in-memory sort;
 - drops the 90-day TTL that was deleting version history.
 
 `syncIndexes()` drops and rebuilds, so run it in a maintenance window on a large
@@ -279,6 +285,8 @@ await m.disconnect();})()"
 
 Expect `owner_1_status_1_updatedAt_-1`,
 `collaborators.user_1_status_1_updatedAt_-1`,
+`owner_1_workspace_1_status_1_updatedAt_-1`,
+`collaborators.user_1_workspace_1_status_1_updatedAt_-1`,
 `starredBy_1_status_1_updatedAt_-1`, `shareToken_1`, `title_text`.
 
 ---

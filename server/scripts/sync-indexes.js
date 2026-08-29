@@ -13,6 +13,13 @@
  *   - Operation: the redundant single-field { docId: 1 }, and the 90-day TTL on
  *     appliedAt that was deleting version history.
  *
+ * Phase 11 ADDS two Document indexes for the workspace-filtered dashboard —
+ * { owner, workspace, status, updatedAt } and the collaborators.user
+ * equivalent. Without them that query examines 14.9 documents for every one it
+ * returns (measured on 5000); with them, 1.0. They are additive: the existing
+ * unfiltered indexes stay, because folding workspace into them would give the
+ * unfiltered dashboard query an in-memory SORT.
+ *
  * syncIndexes() drops-then-builds, so run it during a maintenance window on a
  * large collection: queries relying on an index are unindexed while it rebuilds.
  * It is safe to run repeatedly; it is a no-op once the database matches.
@@ -28,8 +35,12 @@ const Operation = require("../src/models/Operation");
 const Snapshot = require("../src/models/Snapshot");
 const User = require("../src/models/User");
 const Workspace = require("../src/models/Workspace");
+// Both were missing from this map, so their indexes were only ever created
+// implicitly by Mongoose on first use and never reconciled here.
+const AccessRequest = require("../src/models/AccessRequest");
+const Notification = require("../src/models/Notification");
 
-const MODELS = { Document, Operation, Snapshot, User, Workspace };
+const MODELS = { Document, Operation, Snapshot, User, Workspace, AccessRequest, Notification };
 
 async function main() {
   const uri = process.env.MONGODB_URI;

@@ -11,7 +11,7 @@
  */
 
 import { useState, useEffect, useRef } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { useWorkspace } from "../../hooks/useWorkspace";
 import { useNotifications } from "../../hooks/useNotifications";
 import NotificationBell from "./NotificationBell";
@@ -253,17 +253,47 @@ function DeleteWorkspaceModal({ workspace, onConfirm, onClose }) {
 }
 
 // ─── Single workspace row ─────────────────────────────────────────────────────
-function WorkspaceRow({ ws, onDelete }) {
+function UnfiledRow({ onOpen, active }) {
     const [hov, setHov] = useState(false);
     return (
         <div
+            onClick={onOpen}
             onMouseEnter={() => setHov(true)}
             onMouseLeave={() => setHov(false)}
             style={{
                 display: "flex", alignItems: "center", gap: 10, padding: "6px 8px",
-                borderRadius: 6, background: hov ? T.muted : "none",
-                color: hov ? T.fg : T.mutedFg, fontSize: 13, fontFamily: T.font,
-                transition: "all .15s", cursor: "default",
+                borderRadius: 6, background: active ? T.sec : hov ? T.muted : "none",
+                color: active ? T.primary : hov ? T.fg : T.mutedFg, fontSize: 13, fontFamily: T.font,
+                transition: "all .15s", cursor: "pointer",
+            }}
+        >
+            <div style={{
+                width: 20, height: 20, borderRadius: 4, flexShrink: 0,
+                border: `1px dashed ${T.border}`,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: 9, fontWeight: 700, color: T.mutedFg,
+            }}>
+                —
+            </div>
+            <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                Unfiled
+            </span>
+        </div>
+    );
+}
+
+function WorkspaceRow({ ws, onDelete, onOpen, active }) {
+    const [hov, setHov] = useState(false);
+    return (
+        <div
+            onClick={() => onOpen(ws)}
+            onMouseEnter={() => setHov(true)}
+            onMouseLeave={() => setHov(false)}
+            style={{
+                display: "flex", alignItems: "center", gap: 10, padding: "6px 8px",
+                borderRadius: 6, background: active ? T.sec : hov ? T.muted : "none",
+                color: active ? T.primary : hov ? T.fg : T.mutedFg, fontSize: 13, fontFamily: T.font,
+                transition: "all .15s", cursor: "pointer",
             }}
         >
             <div style={{
@@ -275,7 +305,7 @@ function WorkspaceRow({ ws, onDelete }) {
             </div>
             <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ws.name}</span>
             {hov && (
-                <button onClick={() => onDelete(ws)} title="Delete workspace"
+                <button onClick={(e) => { e.stopPropagation(); onDelete(ws); }} title="Delete workspace"
                     style={{ background: "none", border: "none", color: T.mutedFg, cursor: "pointer", padding: 2, display: "flex", flexShrink: 0 }}
                     onMouseEnter={(e) => e.currentTarget.style.color = "#ef4444"}
                     onMouseLeave={(e) => e.currentTarget.style.color = T.mutedFg}>
@@ -289,6 +319,11 @@ function WorkspaceRow({ ws, onDelete }) {
 // ─── ROOT: Sidebar ────────────────────────────────────────────────────────────
 export default function Sidebar({ activeTab }) {
     const navigate = useNavigate();
+    // The workspace view is MyDocumentsPage with a query param rather than its
+    // own page, so the table, menus and sorting are the same ones — and the
+    // highlight here reads straight from the URL instead of local state.
+    const { search: locationSearch } = useLocation();
+    const activeWorkspace = new URLSearchParams(locationSearch).get("workspace");
     const { toast } = useToast();
     const { workspaces, loading, loadWorkspaces, createWorkspace, deleteWorkspace } = useWorkspace();
     const notifs = useNotifications();
@@ -389,9 +424,25 @@ export default function Sidebar({ activeTab }) {
                             No workspaces yet
                         </p>
                     ) : (
-                        workspaces.map((ws) => (
-                            <WorkspaceRow key={docPk(ws)} ws={ws} onDelete={(w) => setDeleteTarget(w)} />
-                        ))
+                        <>
+                            {workspaces.map((ws) => (
+                                <WorkspaceRow
+                                    key={docPk(ws)}
+                                    ws={ws}
+                                    active={activeWorkspace === docPk(ws)}
+                                    onOpen={(w) => navigate(`/documents?workspace=${docPk(w)}`)}
+                                    onDelete={(w) => setDeleteTarget(w)}
+                                />
+                            ))}
+                            {/* Documents in no workspace. Shown only once there
+                                is at least one workspace, because before that
+                                "unfiled" is every document and the distinction
+                                is noise. */}
+                            <UnfiledRow
+                                active={activeWorkspace === "unfiled"}
+                                onOpen={() => navigate("/documents?workspace=unfiled")}
+                            />
+                        </>
                     )}
                 </div>
 
