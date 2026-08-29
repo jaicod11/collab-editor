@@ -1,293 +1,380 @@
-<div align="center">
-  <h1>📝 CollabDocs</h1>
-  <p><strong>A high-performance, real-time collaborative document editor.</strong></p>
-  
-  ![Status](https://img.shields.io/badge/Status-Active-green?style=for-the-badge)
-  ![Node](https://img.shields.io/badge/Node.js-v20+-brightgreen?style=for-the-badge&logo=node.js)
-  ![React](https://img.shields.io/badge/React-18-blue?style=for-the-badge&logo=react)
-  ![Socket.io](https://img.shields.io/badge/Socket.io-4.7-black?style=for-the-badge&logo=socket.io)
-  ![MongoDB](https://img.shields.io/badge/MongoDB-Ready-success?style=for-the-badge&logo=mongodb)
-</div>
+# CollabDocs
+
+**Live app → [collab-ediitor.vercel.app](https://collab-ediitor.vercel.app)**
+
+A real-time collaborative document editor built on a custom **Operational
+Transformation engine written from scratch** — no Yjs, no Automerge, no ShareDB.
+Multiple people edit the same document simultaneously; concurrent edits are
+transformed server-side so every replica converges on the same text.
+
+The OT engine is the point of the project. Everything else — auth, sharing,
+roles, version history — exists to put the engine under realistic load.
+
+> **First load may take 30–60 seconds.** The backend runs on Render's free tier,
+> which spins down after 15 minutes of inactivity. This is expected, not a
+> failure. See [Known limitations](#known-limitations).
 
 ---
 
-## 📖 About The Project
+## Features
 
-**CollabDocs** is a Google Docs-style collaborative editor built from the ground up. The primary objective of this project is to solve the complex computer science problem of concurrent editing. 
+- **Real-time collaborative editing** — concurrent edits converge; the caret
+  holds its position when remote operations rewrite the document around it.
+- **Live presence and cursors** — remote collaborators appear as coloured
+  carets, with a roster of who is in the document.
+- **Markdown formatting** — a toolbar inserts markdown characters
+  (`**bold**`, `_italic_`, `# heading`, `- list`) with a rendered preview
+  toggle. Formatting syncs through OT like any other text; see
+  [why the editor is plain text](#why-the-editor-is-plain-text).
+- **Version history with restore** — an append-only operation log plus
+  snapshots every 50 revisions, so any past revision can be reconstructed and
+  restored.
+- **Share by link with owner approval** — the owner generates a token link. A
+  visitor opening it sees the title and owner but *not* the content, and can
+  request access. Approval moves them into the document without a refresh.
+- **Editor / viewer roles, enforced server-side** — a viewer's `op:submit` is
+  rejected by the server, not merely hidden in the UI. Role changes take effect
+  on connected sockets immediately.
+- **Starring**, and an **Active → Archived → Deleted** lifecycle with archive
+  and trash views.
+- **PDF export** via the browser's print pipeline, with the app chrome hidden
+  and the filename defaulting to the document title.
 
-Instead of relying on heavy third-party synchronization libraries, CollabDocs implements a custom **Operational Transformation (OT)** engine. This ensures that when multiple users type in the exact same document at the exact same millisecond, all conflicts are resolved seamlessly without data loss or cursor jumping.
+---
 
-## ✨ Key Features
+## Architecture
 
-* ⚡ **Real-time Collaboration** — Multiple users can edit the same document simultaneously with zero friction.
-* 🔄 **Operational Transformation** — Conflict-free concurrent edits achieving sub-50ms latency.
-* 🖱️ **Live Presence** — See other users' cursors and selections moving in real-time.
-* ⏪ **Version History & Restores** — Full append-only operation log allowing point-in-time document restoration.
-* 🚀 **Horizontally Scalable** — Uses Redis Pub/Sub to sync document state and operations across multiple Node.js server instances.
-* 🔒 **Secure Authentication** — JWT-based authentication for user registration and secure document access.
+Three packages. `shared/` is the important one: it is the single source of truth
+for the OT algorithm, written as ESM and imported by **both** the browser and
+the server, so the two sides cannot drift.
 
-### Markdown, deliberately
+```
+┌──────────────────────────────────────────────────────────┐
+│  CLIENT  (React 18 + Vite, Vercel)                       │
+│    EditorPage → EditorCore → CursorOverlay               │
+│    useSocket · useOT · usePresence                       │
+└───────────┬──────────────────────────┬───────────────────┘
+            │ WebSocket (Socket.io)    │ REST (axios)
+            ▼                          ▼
+┌──────────────────────────────────────────────────────────┐
+│  SERVER  (Node 22 + Express + Socket.io, Render)         │
+│    socketServer → documentHandler → otService            │
+│                 → presenceHandler                        │
+│    auth · documents · history · workspaces routes        │
+└──────┬───────────────────────────────┬───────────────────┘
+       │                               │
+ ┌─────▼──────────┐            ┌───────▼────────────┐
+ │  Redis         │            │  MongoDB Atlas     │
+ │  (Upstash)     │            │  Documents         │
+ │  document lock │            │  Operations (log)  │
+ │  op cache      │            │  Snapshots         │
+ │  pub/sub       │            │  Users             │
+ │  sessions      │            │  AccessRequests    │
+ └────────────────┘            └────────────────────┘
+                    ▲
+        shared/ot — imported by both sides
+```
 
-The editor is a **markdown source editor**. The formatting toolbar inserts
-markdown characters — `**bold**`, `_italic_`, `# heading`, `- list` — and a
-Preview toggle renders the result.
+### The operation path
 
-This is not a stylistic preference. The OT engine in `shared/ot/` transforms
-operations over a flat string: `insert(pos, text)` and `delete(pos, len)`, with
-positions as character offsets. Formatting therefore has to *be* characters. If
-it were an attribute on a range, it would need its own operation type and its
-own transform — so that two people bolding overlapping ranges while a third
-deletes across them converge on the same result. Markdown sidesteps that
-entirely: formatting is text, so it syncs through the existing transform with no
-special handling, and a formatting action is indistinguishable from typing.
+Every keystroke becomes an operation and takes this route
+([`documentHandler.js`](server/src/socket/handlers/documentHandler.js)):
 
-An earlier version shipped a toolbar built on `document.execCommand`, which
-writes HTML into the editable element. Because the sync layer reads and writes
+1. **Client submits** `op:submit { docId, op, revision }`, tagged with the
+   tab's site id, and holds it as pending.
+2. **Server authorises** — write access is checked per operation, and the op's
+   shape is validated (`otService.validateOp`) before anything else happens.
+3. **Lock** — an in-process FIFO queue serialises same-node submissions, wrapped
+   in a Redis `SET NX PX` lock so the critical section holds across nodes.
+4. **Catch up** — operations the client had not yet seen are read from the Redis
+   op cache, falling back to the MongoDB operation log if the range has been
+   trimmed.
+5. **Transform** the incoming op against each missed op, in order.
+6. **Apply** the transformed op, increment the revision.
+7. **Persist** — the operation and the updated document are written to MongoDB
+   and awaited *inside* the lock, then the Redis cache is refreshed.
+8. **Ack** the submitting socket, then **publish** to Redis, which fans the
+   broadcast out to every node's copy of the room.
+9. **Release** the lock with a compare-and-delete.
+
+Persistence sits inside the critical section deliberately. It lengthens the
+lock, and the trade is that an `op:ack` means the operation is durable — a
+client that has been acked never has to wonder whether its edit survived.
+
+### Tech stack
+
+| Layer | Technology |
+|---|---|
+| Frontend | React 18.3, Vite 5, Zustand 4.5, React Router 6 |
+| Styling | Inline styles from per-file design-token objects; a small amount of Tailwind 3.4 for overlay and toast positioning |
+| Editor | `contentEditable` with a plain-text invariant; `marked` + `DOMPurify` for preview |
+| Real-time | Socket.io 4.7 + a from-scratch OT engine in `shared/ot/` |
+| Backend | Node 22.12, Express 4.19, Mongoose 8.4 |
+| Data | MongoDB Atlas; Redis (Upstash) for the lock, op cache, pub/sub and session fast path |
+| Auth | JWT (`jsonwebtoken` 9), `bcryptjs`, `helmet`, `express-rate-limit` |
+| Hosting | Vercel (client) + Render (server) |
+
+---
+
+## Engineering notes
+
+### The OT engine and its correctness
+
+The transform function is the part of this project most likely to be subtly
+wrong, so it is tested as a mathematical property rather than by example.
+
+An exhaustive sweep of the operation space — 36 operations (inserts and deletes
+of varying length at every position in a 10-character document), every ordered
+pair, **1,296 pairs** — initially failed **408 of them (31.5%)** on the TP1
+convergence property. Three distinct defects were responsible:
+
+1. **Overlapping deletes removed the union of both ranges.** Two users deleting
+   overlapping spans each removed what the other had already removed, so the
+   intersection was deleted twice and text either side was lost.
+2. **An insert inside a concurrent delete range was duplicated or lost**,
+   depending on which replica applied which order first.
+3. **The insert/insert tie-break depended on argument order**, so
+   `transform(a, b)` and `transform(b, a)` disagreed about which insert went
+   first — the two replicas could not converge by construction.
+
+All three are fixed and pinned by named regression tests
+([`convergence.test.js`](shared/test/convergence.test.js)). The suite now runs:
+
+| Sweep | Size | Failures |
+|---|---|---|
+| Exhaustive pair sweep (TP1) | 1,296 pairs | 0 |
+| Cross-replica swapped sweep (two site ids) | 5,184 pairs | 0 |
+| Randomised convergence fuzz | 5,000 + 5,000 pairs | 0 |
+| Two-replica divergent op chains | 2,000 rounds | 0 |
+| `transformAgainst` vs. a manual fold | 2,000 cases | 0 |
+
+**The tie-break is a per-tab site UUID**, not the user id. One person with two
+tabs open is two genuinely concurrent replicas; a shared user id would tie
+forever and leave the ordering dependent on argument order again — defect (3)
+by another route. The id lives in `sessionStorage`, which is per-tab and
+survives a reload, which is exactly the lifetime required.
+
+### Concurrency
+
+The lock is exercised under deliberate contention
+([`concurrency.test.js`](server/test/concurrency.test.js)): 8 sockets × 6
+operations, **48 submissions all at the same base revision**, emitted with no
+awaits between them. The test asserts all 48 acked, every operation present in
+the final document *exactly once*, no `doc:error`, and the revision advanced by
+exactly 48.
+
+Lock release is a Lua compare-and-delete against a token unique to the
+acquisition, so a holder can only ever release its own lock — an unconditional
+`DEL` would let a process whose TTL had expired delete the *next* holder's lock.
+The TTL is 10s and is a crash safety net, not the concurrency control; the queue
+is.
+
+### Why the editor is plain text
+
+This is a design decision with a stated cost, not an unfinished feature.
+
+The OT engine transforms operations over a flat string: `insert(pos, text)` and
+`delete(pos, len)`, positions as character offsets. Formatting therefore has to
+*be* characters. If bold were an attribute on a range, it would need its own
+operation type and its own transform — so that two people bolding overlapping
+ranges while a third deletes across them still converge. Markdown sidesteps that
+entirely: formatting is text, so it flows through the existing transform with no
+special handling, and a toolbar click is indistinguishable from typing.
+
+The editor enforces the plain-text invariant rather than hoping for it. An
+earlier version had a toolbar built on `document.execCommand`, which writes HTML
+into the editable element; because the sync layer reads and writes
 `textContent`, that formatting never entered the diff, never reached the server,
 and was destroyed the moment anyone else's edit rewrote the element. Native
-formatting shortcuts are blocked at the `beforeinput` level for the same reason;
-Ctrl/Cmd+B, I and U are intercepted earlier and insert markdown markers instead.
+formatting paths are now blocked at `beforeinput`, and Ctrl/Cmd+B/I/U are
+intercepted and insert markdown markers instead.
 
-The preview is a read view rather than a live side-by-side pane, and inline
-WYSIWYG inside the contentEditable is deliberately not attempted — a second
-editable surface reintroduces exactly the DOM-structure problem the plain-text
-invariant exists to prevent. Document content is untrusted, so the preview
-renders through `marked` and is sanitised with `DOMPurify` before it reaches the
-DOM; raw HTML from a document is never rendered.
+Document content is untrusted, so the preview renders through `marked` and is
+sanitised with `DOMPurify`; raw HTML from a document is never rendered.
 
-True WYSIWYG remains a future milestone. It requires replacing the plain-string
-operation type with an attributed document model (along the lines of a Quill
-delta or a ProseMirror step), plus a matching transform and storage format — not
-a change that can be made in the view layer.
+True WYSIWYG would mean replacing the plain-string operation type with an
+attributed document model (a Quill delta or ProseMirror step), plus a matching
+transform and storage format. That is a rewrite of the sync layer, not a change
+in the view.
 
----
+### Authentication
 
-## 🛠️ Tech Stack
+JWTs are signed with a `tokenVersion` claim, and the counter lives on the user
+document in MongoDB. Logout, password change and account deletion bump it,
+invalidating every outstanding token for that user.
 
-| Layer | Technologies |
-| :--- | :--- |
-| **Frontend** | React 18, Vite, Tailwind CSS, Zustand |
-| **Real-time Engine** | Socket.io 4.7, Custom Operational Transformation (OT) |
-| **Backend API** | Node.js, Express.js |
-| **Database** | MongoDB (Mongoose) |
-| **Cache & Pub/Sub** | Redis |
-| **Security** | JWT (jsonwebtoken), bcryptjs |
+Redis holds a session record as a **fast path**, and the record stores the
+version it was created with. Verification compares the token's version against
+the cached one, falling back to MongoDB when the session is missing or the
+versions disagree. MongoDB is authoritative, so an evicted or flushed cache
+costs one lookup rather than signing everyone out — and a fresh login cannot
+resurrect a token that was already revoked.
 
----
+When the session store is unreachable the middleware returns **503, not 401**.
+The client tears down the session only on a 401 carrying `code:
+"AUTH_REQUIRED"`, so a transient Redis outage cannot log the entire user base
+out.
 
-## 🏗️ Architecture & Data Flow
+### Tests
 
-CollabDocs is designed to handle high-frequency events efficiently by buffering operations in Redis before flushing them to MongoDB asynchronously.
+**273 tests** across 18 files, all runnable locally:
 
-```text
-┌─────────────────────────────────────────────────────────┐
-│  CLIENT  (React + Vite + Tailwind)                      │
-│                                                         │
-│  DocumentDashboard → EditorPage → EditorCore            │
-│          useSocket → useOT → usePresence                │
-└──────────────┬────────────────────────┬─────────────────┘
-               │ WebSocket (Socket.io)  │ REST (axios)
-               ▼                        ▼
-┌─────────────────────────────────────────────────────────┐
-│  SERVER  (Node.js + Express + Socket.io)                │
-│                                                         │
-│  socketServer → documentHandler → otService             │
-│               → presenceHandler                         │
-│  authRoutes / documentRoutes / historyRoutes            │
-└──────────┬──────────────────────────┬───────────────────┘
-           │                          │
-     ┌─────▼─────┐              ┌─────▼────────┐
-     │   Redis   │              │   MongoDB    │
-     │ pub/sub   │              │ Documents    │
-     │ op cache  │              │ Operations   │
-     │ sessions  │              │ Users        │
-     └───────────┘              └──────────────┘
-```
+| Package | Tests | Covers |
+|---|---:|---|
+| `shared` | 113 | Convergence sweeps, fuzz, batch/no-op handling, markdown helpers, newline behaviour, client sync bookkeeping |
+| `client` | 86 | Socket/session wiring, store rehydration on reload, share-link parsing, markdown sanitisation, PDF export naming |
+| `server` | 74 | Lock primitives, concurrent admission, persistence, history coalescing, snapshot/restore, roles, sharing, presence |
 
-### ⚡ Sub-50ms OT Resolution Flow
-1. Client submits operation to Server.
-2. Server acquires a **Redis Lock** (100ms TTL) for the document.
-3. Loads missed operations from the Redis Cache.
-4. Transforms the incoming operation against missed operations.
-5. Applies transformed op, increments revision, and updates Redis cache.
-6. Persists to MongoDB (Asynchronously).
-7. Publishes via Redis to all connected nodes/clients.
+Every server suite that touches a database boots the real server against the
+local Docker stack, and refuses to run if `MONGODB_URI` or `REDIS_URL` is not
+`localhost` — so a stray production URI in the environment aborts the run
+instead of writing to it.
 
 ---
 
-## 🚀 Quick Start
+## Known limitations
+
+**It must run as exactly one instance.** `@socket.io/redis-adapter` is not
+installed. The *edit stream* genuinely is cross-node — operations, per-user
+notifications and access revocations are published to Redis (`pSubscribe
+doc:ops:*`) and re-broadcast by every subscribing node — but presence is not:
+`presence:join` / `presence:leave` / cursor updates go out via
+`socket.to(room)` on the default in-memory adapter, `socket/rooms.js` is a
+per-process `Map`, and the post-restore `doc:load` broadcast is local too. With
+two instances, users on different nodes would see each other's edits but not
+each other's cursors, and each would see an incomplete collaborator list.
+
+Lifting it would take: installing the Redis adapter and wiring it into
+`initSocket()`; moving room membership into shared Redis state (an adapter alone
+cannot fix per-process membership); and sticky sessions or websocket-only
+transport so the handshake does not land on a different node mid-negotiation.
+
+**Search matches titles only.** `content` was removed from the text index
+because every `op:submit` rewrites `Document.content`, so MongoDB re-tokenised
+the entire document body on every keystroke — write amplification that grew with
+document length, and the most expensive thing on the edit path. Body search is a
+real capability that was removed, not an oversight. Restoring it means
+decoupling the searchable copy from the live one (Atlas Search fed
+asynchronously, or a separate collection refreshed on the snapshot cadence).
+
+**Plain text with markdown, not WYSIWYG** — see
+[above](#why-the-editor-is-plain-text) for why, and what changing it would cost.
+
+**Workspaces do not organise documents yet.** They exist as named, colour-coded
+groups with an owner and members, with full CRUD and a sidebar UI — but
+`Document` has no workspace reference and no document query filters by one. The
+feature is the container, not the filing.
+
+**Cold starts on the free tier.** Render spins the backend down after 15 minutes
+idle; the next request takes 30–60 seconds. The client's HTTP timeout is shorter
+than that, so the *first* load after an idle period shows an error toast over an
+empty dashboard rather than a spinner. Reloading once the service is awake works
+normally, and you are not signed out. An open editor tab produces socket
+heartbeat traffic that should keep the service awake while it is open.
+
+**No E2E browser tests.** The suites cover the OT engine, the hooks and the
+server; the assembled UI is verified by hand against the checklist in
+[DEPLOYMENT.md](DEPLOYMENT.md).
+
+---
+
+## Local development
 
 ### Prerequisites
-* Node.js v20+
-* MongoDB instance (Atlas free tier works)
-* Redis instance (Upstash free tier works)
 
-### 1. Clone the repository
+- **Node 22.12+** — required, not advisory. The server is CommonJS and
+  `require()`s the ESM `shared/ot` package; `require(ESM)` is only unflagged
+  from 22.12, and on Node 20 the process dies at startup with
+  `ERR_REQUIRE_ESM`. `.nvmrc` pins `22.12.0`.
+- **Docker** — for the local MongoDB and Redis stack.
+
+### 1. Start the data stack
+
 ```bash
-git clone [https://github.com/yourusername/collab-editor.git](https://github.com/yourusername/collab-editor.git)
-cd collab-editor
+docker compose -f infra/docker-compose.dev.yml up -d
 ```
 
-### 2. Backend Setup
+MongoDB runs as a single-node replica set on `127.0.0.1:27018` (a replica set
+even for one node, because transactions and change streams need one); Redis on
+`127.0.0.1:6380`. See [`infra/README.md`](infra/README.md) — this stack is for
+local development only and is not what production runs.
+
+### 2. Configure environment
+
 ```bash
-cd server
-cp .env.example .env
+cp server/.env.example server/.env
+cp client/.env.example client/.env
 ```
-Update your `.env` variables:
-```env
-PORT=4000
-NODE_ENV=development
-MONGODB_URI=mongodb+srv://<user>:<pass>@cluster.mongodb.net/collab-editor
-REDIS_URL=rediss://default:<pass>@your-endpoint.upstash.io:6379
-JWT_SECRET=your_secure_random_string
-JWT_EXPIRES=7d
-CLIENT_URL=http://localhost:5173
-```
-Install dependencies and start the server:
+
+Fill them in by following the comments in each `.env.example`. The server
+refuses to boot without `MONGODB_URI`, `REDIS_URL`, `JWT_SECRET` and
+`CLIENT_URL`. Note that `VITE_` variables are inlined into the client bundle at
+build time and are therefore never secret.
+
+### 3. Install and run
+
 ```bash
-npm install
-npm run dev
+npm ci --prefix server && npm run dev --prefix server   # http://localhost:4000
+npm ci --prefix client && npm run dev --prefix client   # http://localhost:5173
 ```
 
-### 3. Frontend Setup
+Use `npm ci`, not `npm install` — lockfiles are committed so that local, CI and
+deployed trees match.
+
+### 4. Tests
+
 ```bash
-cd ../client
-cp .env.example .env
-npm install
-npm run dev
+npm test                    # all 273, in order: shared → client → server
+npm run test:ot             # shared/ — convergence sweeps and fuzz
+npm run test:client         # client/
+npm run test:persistence    # server/ — needs the Docker stack running
 ```
-Open **http://localhost:5173** in your browser.
 
----
+### Project structure
 
-## 🌐 API & Socket Reference
-
-<details>
-<summary><strong>Click to expand REST API Endpoints</strong></summary>
-
-### Auth Endpoints (`/api/auth`)
-| Method | Path | Payload | Description |
-|---|---|---|---|
-| POST | `/register` | `{name, email, password}` | Register new user |
-| POST | `/login` | `{email, password}` | Authenticate user |
-| GET | `/me` | — | Get current user profile |
-
-### Document Endpoints (`/api/documents`)
-| Method | Path | Payload | Description |
-|---|---|---|---|
-| GET | `/` | `?filter=all&search=` | List documents |
-| POST | `/` | `{title}` | Create new document |
-| GET | `/:id` | — | Get single document |
-
-### History Endpoints (`/api/history`)
-| Method | Path | Payload | Description |
-|---|---|---|---|
-| GET | `/:id` | — | Get version history array |
-| POST | `/:id/restore/:revId` | — | Restore to specific revision |
-
-</details>
-
-<details>
-<summary><strong>Click to expand WebSocket Events</strong></summary>
-
-| Event | Direction | Payload |
-|---|---|---|
-| `doc:join` | Client → Server | `{docId}` |
-| `op:submit` | Client → Server | `{docId, op, revision}` |
-| `presence:cursor` | Client → Server | `{docId, cursor}` |
-| `doc:load` | Server → Client | `{content, revision, title}` |
-| `op:ack` | Server → Client | `{op, revision}` |
-| `op:broadcast` | Server → Client | `{op, revision, userId}` |
-
-</details>
-
----
-
-## 📂 Project Structure
-
-<details>
-<summary><strong>View Directory Tree</strong></summary>
-
-```text
+```
 collab-editor/
-├── client/                      # React + Vite frontend
+├── client/                  # React + Vite frontend
+│   └── src/
+│       ├── components/      # Editor, Layout, UI
+│       ├── hooks/           # useSocket, useOT, usePresence, useDocument
+│       ├── lib/             # PDF export, share links, re-export shim for shared/ot
+│       ├── pages/           # Route components
+│       ├── services/        # axios instance, socket singleton, session↔socket wiring
+│       └── store/           # Zustand slices
+│
+├── server/                  # Node + Express backend
 │   ├── src/
-│   │   ├── components/          # Reusable UI components (Editor, Sidebar, etc.)
-│   │   ├── hooks/               # Custom hooks (useSocket, useOT, usePresence)
-│   │   ├── lib/                 # Client-side OT primitives
-│   │   ├── pages/               # Route components
-│   │   ├── services/            # API and Socket instances
-│   │   └── store/               # Zustand state management
-│   └── package.json
+│   │   ├── config/          # env validation, Mongo and Redis connections
+│   │   ├── controllers/     # auth, document, share, history, workspace
+│   │   ├── middleware/      # JWT auth, rate limiting, error handling
+│   │   ├── models/          # User, Document, Operation, Snapshot, AccessRequest, Workspace
+│   │   ├── routes/
+│   │   ├── services/        # otService, lockService, sessionService, snapshotService, …
+│   │   └── socket/          # socketServer, document/presence handlers, rooms
+│   ├── scripts/             # one-off migrations
+│   └── test/
 │
-├── server/                      # Node.js backend
-│   ├── src/
-│   │   ├── config/              # DB and Redis connection logic
-│   │   ├── controllers/         # REST request handlers
-│   │   ├── middleware/          # Auth and Error handling
-│   │   ├── models/              # Mongoose schemas
-│   │   ├── routes/              # Express routing
-│   │   ├── services/            # Core business logic & OT Engine
-│   │   └── socket/              # WebSockets room & presence handlers
-│   └── package.json
+├── shared/                  # OT engine — one source of truth, ESM, both sides
+│   ├── ot/                  # operations, client-sync, diff, markdown
+│   └── test/
 │
-├── shared/                      # Shared types and OT logic
-│   └── ot/operations.js
-│
-└── infra/                       # Local dev stack only — see infra/README.md
-    ├── docker-compose.dev.yml
-    └── redis.dev.conf
+└── infra/                   # local dev stack only
 ```
-</details>
 
 ---
 
-## 📈 Running Multiple Instances
+## Deployment
 
-**The app must run as a single instance today.** Some real-time paths fan out
-across nodes and some do not, so a second instance splits collaboration in ways
-that are easy to miss.
-
-**Works across nodes.** These are published to Redis, and every node subscribes
-and forwards to its own connected clients (`socket/socketServer.js`):
-
-- document operations (`op:broadcast`) — the OT edit stream
-- per-user notifications from the REST layer (share request approve / deny)
-- forced access revocation and role changes
-
-**Single-instance only.** These use Socket.io's default in-memory adapter, so
-they reach only the sockets held by the node that emitted them:
-
-- presence — `presence:join`, `presence:leave` and cursor updates are sent with
-  `socket.to(room)` (`socket/handlers/presenceHandler.js`)
-- room membership — `socket/rooms.js` is a plain in-process `Map`, so each node
-  knows only its own members and reports an under-counted collaborator list
-- the `doc:load` broadcast after a version restore
-  (`socket/handlers/documentHandler.js`)
-
-So with two instances, two users on different nodes would see each other's
-**edits** but not each other's **cursors or presence**, and each would see an
-incomplete list of who is in the document.
-
-`@socket.io/redis-adapter` is **not** installed. Redis is still required for a
-single instance — it backs the distributed lock, the op cache and the
-cross-node channels above.
-
-### What multi-instance would require
-
-1. Install `@socket.io/redis-adapter` and wire it into `initSocket()`. That makes
-   `io.to()` / `socket.to()` fan out across nodes, fixing presence and making the
-   hand-rolled op pub/sub redundant.
-2. Move room membership out of `socket/rooms.js` into shared Redis state —
-   per-process membership cannot be made correct by an adapter alone.
-3. Sticky sessions at the load balancer, or `transports: ["websocket"]` on the
-   client, so Socket.io's long-polling handshake does not land on a different
-   node mid-negotiation.
-4. Keep a single shared Redis. `services/lockService.js` already assumes every
-   node talks to the same instance; separate Redises would void the lock.
+Render (backend) + Vercel (frontend), with MongoDB Atlas and Upstash Redis.
+Full runbook — service settings, environment variables, the two required
+migrations, the Node pin, cold starts, and a post-deploy smoke checklist — is in
+**[DEPLOYMENT.md](DEPLOYMENT.md)**.
 
 ---
 
-## 📄 License
+## License
 
-Distributed under the MIT License.
+No `LICENSE` file is present in this repository yet. The previous README stated
+MIT; until a licence file is added, that is a claim the repository does not
+actually make.
