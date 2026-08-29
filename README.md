@@ -375,6 +375,4 @@ migrations, the Node pin, cold starts, and a post-deploy smoke checklist — is 
 
 ## License
 
-No `LICENSE` file is present in this repository yet. The previous README stated
-MIT; until a licence file is added, that is a claim the repository does not
-actually make.
+MIT — see [LICENSE](LICENSE).

@@ -17,13 +17,28 @@
  *    "op:broadcast" { op, revision, userId }  (to all others via Redis)
  *    "doc:error"    { message }
  *
- * OT flow (sub-50ms target):
- *   1. Lock document revision in Redis (SETNX with 100ms TTL)
- *   2. Load ops since client's revision from Redis cache (fallback: MongoDB)
- *   3. Transform incoming op against missed ops
- *   4. Apply transformed op to document content
- *   5. Increment revision, persist op + updated content
- *   6. Release lock, publish via Redis pub/sub, ACK client
+ * op:submit flow:
+ *   1. Authorise the write and validate the op's shape (otService.validateOp)
+ *      before taking any lock.
+ *   2. Enter the critical section. Serialisation is done by the in-process FIFO
+ *      queue in lockService — same-document submissions QUEUE rather than race.
+ *      The Redis SET NX PX lock wrapped around it extends that exclusion across
+ *      nodes; its 10s TTL is a crash safety net, not the concurrency control,
+ *      and release is a compare-and-delete so a holder can only free its own.
+ *   3. Load the canonical document, then the ops applied since the client's
+ *      revision — from the Redis op cache, falling back to the durable
+ *      MongoDB log when the cached range has been trimmed.
+ *   4. Transform the incoming op against each missed op, apply it, and
+ *      increment the revision.
+ *   5. Persist the op and the updated document to MongoDB, AWAITED inside the
+ *      lock, then refresh the Redis cache. This lengthens the critical section
+ *      on purpose: an op:ack therefore means the write is durable.
+ *   6. Ack the submitter, then publish to Redis — both still inside the lock,
+ *      so back-to-back ops reach other clients in revision order.
+ *   7. Release the lock.
+ *
+ * No latency target is claimed here. The end-to-end time is dominated by the
+ * awaited MongoDB writes in step 5 and has not been measured.
  */
 
 const Document = require("../../models/Document");
