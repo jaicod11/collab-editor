@@ -10,12 +10,16 @@
  *    "doc:restore"  { docId, versionId }
  *
  *  Server → Client:
- *    "doc:load"       { content, revision, title }
+ *    "doc:load"        { content, revision, title }
  *    "presence:update" [{ userId, name, initials }]  full roster, to the joiner
  *    "presence:join"   { userId, name, initials }    to everyone already in room
- *    "op:ack"       { revision, op }          (only to submitting socket)
- *    "op:broadcast" { op, revision, userId }  (to all others via Redis)
- *    "doc:error"    { message }
+ *    "presence:leave"  { userId }                    to everyone else in the room
+ *    "op:ack"          { revision, op }              only to the submitting socket
+ *    "op:broadcast"    { op, revision, userId }      to all others, via Redis
+ *    "access:role"     { docId, role }               to the one user whose role
+ *                                                    changed, without a reconnect
+ *    "doc:error"       { code, message }             the client keys its resync
+ *                                                    decision on `code`
  *
  * op:submit flow:
  *   1. Authorise the write and validate the op's shape (otService.validateOp)

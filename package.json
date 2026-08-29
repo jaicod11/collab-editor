@@ -2,6 +2,8 @@
   "name": "collab-editor",
   "private": true,
   "description": "Real-time collaborative document editor — monorepo root",
+  "author": "Jaideep Kundu",
+  "license": "MIT",
   "scripts": {
     "test": "npm --prefix shared test && npm --prefix client test && npm --prefix server test",
     "test:ot": "npm --prefix shared test",
