@@ -39,10 +39,10 @@ roles, version history — exists to put the engine under realistic load.
   approvals, denials, role changes and revocations. Delivered live over the
   personal socket room so the bell updates without a refresh, and durable, so
   it survives a reload or a missed connection.
-- **Workspaces** — named, colour-coded groups documents can be filed into,
-  with a per-workspace view and an "Unfiled" one. A workspace is a *label, not
-  a grant*: filing changes nothing about who can open a document, and the
-  workspace filter can only narrow what you could already see.
+- **Workspaces** — private, colour-coded categories for organising your own
+  documents, with a per-workspace view and an "Unfiled" one. They are personal
+  filing, *not* team spaces: a workspace belongs to one user, and filing a
+  document changes nothing about who can open it.
 - **Starring**, and an **Active → Archived → Deleted** lifecycle with archive
   and trash views.
 - **PDF export** via the browser's print pipeline, with the app chrome hidden
@@ -206,37 +206,54 @@ attributed document model (a Quill delta or ProseMirror step), plus a matching
 transform and storage format. That is a rewrite of the sync layer, not a change
 in the view.
 
-### Workspaces are a label, not a grant
+### Workspaces are private filing, not a team
 
-The obvious way to build workspaces turns them into a second, weaker permission
-system: file a document into a shared workspace and everyone in it can suddenly
-read it. That is a privilege-escalation path hiding inside an organisation
-feature, so the rule here is the opposite one.
+A workspace is a **private organisational category**: a named, coloured group a
+user files their own documents under so they can find them again. It belongs to
+exactly one person, only that person can see it, and it grants nothing. Sharing
+is entirely the business of `Document.collaborators`.
 
-**Only a document's owner may file it**, and only into a workspace they own or
-belong to — enforced structurally, since every write path already filters on
-`owner: req.user.id`, so a collaborator's PATCH matches nothing. A workspace
-they do not belong to and a workspace that does not exist return the *same*
-404, so the endpoint cannot be used to discover which workspace ids are real.
+That is a deliberate boundary rather than an unfinished one. The obvious way to
+build workspaces turns them into a second, weaker permission system — file a
+document into a shared workspace and everyone in it can suddenly read it — which
+is a privilege-escalation path hiding inside an organisation feature. Keeping
+the two concepts disjoint means there is only ever one answer to "who can open
+this document", and it is the collaborator list.
 
-**Membership grants nothing.** `documentController.list` applies the workspace
-filter *in addition* to the owner/collaborator `$or`, never instead of it, so
-filtering can only ever narrow the caller's own set. A document shared with
-someone outside its workspace stays fully visible to them under Shared with Me;
-they simply cannot filter by that workspace. Workspace *names* are never
-returned with a document either — the client resolves them from
-`/api/workspaces`, which is already scoped, so a non-member holding an
-unresolvable id renders nothing rather than seeing a leaked name.
+**Only a document's owner may file it, into one of their own workspaces.** Both
+halves are single-owner checks: the document half structurally, since every
+write path already filters on `owner: req.user.id`, so a collaborator's PATCH
+matches nothing. Someone else's workspace and a workspace that does not exist
+return the *same* 404, so the endpoint cannot be used to discover which
+workspace ids are real.
+
+**Filing exposes a document to nobody.** `documentController.list` applies the
+workspace filter *in addition* to the owner/collaborator `$or`, never instead of
+it, so filtering can only ever narrow the caller's own set — passing someone
+else's workspace id returns an empty list, not a window into it. A document
+shared with a collaborator stays fully visible to them under Shared with Me
+regardless of where its owner filed it, and the workspace *name* never travels
+with the document: the client resolves names from `/api/workspaces`, which
+returns only the caller's own, so a collaborator holds an id they cannot resolve
+and renders nothing rather than seeing a leaked name.
+
+**There is no way to add someone to a workspace, and that is correct.** An
+earlier revision carried a `members` array. It granted nothing, no endpoint
+could extend it, and it always held exactly one id — so its only effect was to
+imply a capability the product does not have. It was removed rather than kept as
+a "future extension point", and every owner-or-member check it fed collapsed to
+owner-only.
 
 **Deleting a workspace unfiles its documents**, it does not delete them and does
 not leave dangling references. Blocking deletion while non-empty was the
 alternative; it was rejected because "no workspace" is already a valid resting
 state, so there is no reason to make tidying up a chore.
 
-The security half of this is covered from the outside in
-[`workspaces.test.js`](server/test/workspaces.test.js): a user who is a member
-of a workspace but *not* a collaborator on a document filed into it must see
-nothing — not in a list, not through the filter, not by direct fetch.
+The security half is covered from the outside in
+[`workspaces.test.js`](server/test/workspaces.test.js): a user who is not a
+collaborator must see a filed document nowhere — not in a list, not through the
+filter *even holding the owner's workspace id*, not by direct fetch — and no
+response may carry a `members` array.
 
 ### Authentication
 
@@ -258,13 +275,13 @@ out.
 
 ### Tests
 
-**307 tests** across 22 files, all runnable locally:
+**310 tests** across 22 files, all runnable locally:
 
 | Package | Tests | Covers |
 |---|---:|---|
 | `shared` | 113 | Convergence sweeps, fuzz, batch/no-op handling, markdown helpers, newline behaviour, client sync bookkeeping |
 | `client` | 94 | Socket/session wiring, the doc:join failure path, store rehydration on reload, share-link parsing, markdown sanitisation, PDF export naming |
-| `server` | 100 | Lock primitives, concurrent admission, persistence, history coalescing, snapshot/restore, roles, sharing, presence, doc:error contract, notification scoping, workspace filing and filtering |
+| `server` | 103 | Lock primitives, concurrent admission, persistence, history coalescing, snapshot/restore, roles, sharing, presence, doc:error contract, notification scoping, workspace filing and filtering |
 
 Every server suite that touches a database boots the real server against the
 local Docker stack, and refuses to run if `MONGODB_URI` or `REDIS_URL` is not

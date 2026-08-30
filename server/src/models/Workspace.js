@@ -1,16 +1,19 @@
 /**
  * server/src/models/Workspace.js
  * ─────────────────────────────────────────────────────────────────────────────
- * A workspace groups documents/collaborators under a named, colored badge
- * (shown in the sidebar — e.g. "Design Team", "Engineering").
+ * A PRIVATE organisational category: a named, coloured badge a user files
+ * their own documents under so they can group and find them again.
  *
- * Kept intentionally simple for now:
- *   - owner: the user who created it (only they can rename/delete it)
- *   - members: everyone with access (owner is auto-included)
+ * It is not a sharing mechanism and not a team. A workspace belongs to exactly
+ * one user, only that user can see it, and filing a document into one changes
+ * nothing about who can open that document — sharing is entirely the business
+ * of Document.collaborators.
  *
- * Future extension point: invite other users into `members` via email,
- * and optionally scope documents to a workspace with a `workspace` field
- * on the Document model.
+ * There was a `members` array here. It granted nothing, no endpoint could add
+ * to it, and it always held exactly one id (the owner), so its only effect was
+ * to imply a capability the product does not have. Removed rather than left as
+ * a "future extension point": under this definition it is not a step towards
+ * anything, and every owner-or-member check it fed collapsed to owner-only.
  */
 
 const mongoose = require("mongoose");
@@ -32,10 +35,6 @@ const workspaceSchema = new mongoose.Schema(
             ref: "User",
             required: true,
         },
-        members: [{
-            type: mongoose.Schema.Types.ObjectId,
-            ref: "User",
-        }],
     },
     { timestamps: true }
 );

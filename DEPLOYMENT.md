@@ -7,9 +7,9 @@ Both platforms terminate TLS and route traffic themselves, so there is no
 reverse proxy in this architecture. `infra/` is the local development stack
 only — see [`infra/README.md`](infra/README.md).
 
-Deploy in the order below. Steps 4 and 5 are the two migrations that have only
-ever been run against a local database; skipping either leaves the app running
-but visibly wrong.
+Deploy in the order below. Steps 5 and 6 are the two required migrations, which
+have only ever been run against a local database; skipping either leaves the app
+running but visibly wrong. Step 7 is an optional data cleanup.
 
 ---
 
@@ -291,7 +291,33 @@ Expect `owner_1_status_1_updatedAt_-1`,
 
 ---
 
-## 7. Deploy the frontend
+## 7. Migration: drop vestigial workspace members  (recommended)
+
+```bash
+cd server
+MONGODB_URI='<production Atlas URI>' node scripts/drop-workspace-members.js --dry-run
+MONGODB_URI='<production Atlas URI>' node scripts/drop-workspace-members.js
+```
+
+Workspaces carried a `members` array that granted nothing and that no endpoint
+could ever add to. It was removed from the schema because leaving it implied a
+sharing capability the product does not have — a workspace is a private
+organisational category belonging to one user.
+
+Unlike steps 5 and 6 this is **not required for correct behaviour**: the
+controller projects the field out of every response, so the API contract holds
+whether or not this has run. It removes the dead data itself. Skipping it leaves
+`members` arrays on disk that nothing reads and nothing returns.
+
+The dry run reports any workspace holding more than one id. There should be
+none; if there are, look at them before proceeding rather than discarding data
+the field was not supposed to hold.
+
+Idempotent, and safe to run while the app is serving.
+
+---
+
+## 8. Deploy the frontend
 
 Deploy on Vercel with the variables from step 2, **after** the Render service
 has a stable URL. Then set `CLIENT_URL` on Render to the Vercel origin and
@@ -302,7 +328,7 @@ passes.
 
 ---
 
-## 8. Cold starts on the free instance ⚠️ read before demoing
+## 9. Cold starts on the free instance ⚠️ read before demoing
 
 A free Render Web Service **spins down after 15 minutes without inbound
 traffic**, and the next request takes **30–60 seconds** while it wakes. This app
@@ -358,7 +384,7 @@ take about a minute. Both are application changes, deliberately not made here.
 
 ---
 
-## 9. Post-deploy smoke checklist
+## 10. Post-deploy smoke checklist
 
 Run in order; each depends on the previous. On a free instance, load the app
 once and wait for it to wake before starting.

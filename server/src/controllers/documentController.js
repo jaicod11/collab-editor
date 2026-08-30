@@ -26,35 +26,31 @@ const documentService = require("../services/documentService");
 
 /**
  * ── The filing rule ──────────────────────────────────────────────────────────
- * A workspace is a LABEL, never a grant.
+ * A workspace is a PRIVATE organisational category, never a grant.
  *
- * Who may file: the document's OWNER only, and only into a workspace they own
- * or are a member of. Unfiling (null) is always allowed for the owner. The
- * owner-only half is enforced structurally — every write path here already
- * filters on `owner: req.user.id` — and this function enforces the other half.
+ * Who may file: the document's OWNER, into one of their OWN workspaces.
+ * Unfiling (null) is always allowed. Both halves are single-owner checks — the
+ * document half structurally, because every write path here already filters on
+ * `owner: req.user.id`, and the workspace half below.
  *
- * Why not collaborators: the workspace is the owner's filing system. A
- * collaborator moving someone else's document into their own workspace makes
- * "whose filing is this?" unanswerable, and would let anyone shared with pull a
- * document into a workspace its owner cannot see.
+ * Why not collaborators: the workspace is the owner's private filing system. A
+ * collaborator filing someone else's document would be sorting it into a
+ * category its owner cannot even see.
  *
- * What it deliberately does NOT do: grant access. Workspace membership gives no
- * rights over the documents filed in it — `list` applies the workspace filter IN
- * ADDITION to the owner/collaborator $or, so filtering can only ever narrow what
- * the caller could already see. A document shared with someone who is not a
- * member of its workspace stays fully visible to them under Shared with Me;
- * they simply cannot use that workspace as a filter, and the client resolves
- * workspace NAMES from /api/workspaces (already scoped to owner/member), so a
- * non-member holding an unresolvable id sees nothing rather than a leaked name.
+ * What it deliberately does NOT do: grant access. Filing gives nobody any
+ * rights over a document — `list` applies the workspace filter IN ADDITION to
+ * the owner/collaborator $or, so filtering can only ever narrow what the caller
+ * could already see. A document shared with someone stays fully visible to them
+ * under Shared with Me regardless of where its owner filed it, and the workspace
+ * NAME never travels with the document: the client resolves names from
+ * /api/workspaces, which returns only the caller's own, so a collaborator holds
+ * an id they cannot resolve and renders nothing rather than a leaked name.
  *
  * @returns {Promise<boolean>} whether `userId` may file into `workspaceId`
  */
 async function canFileInto(workspaceId, userId) {
   if (!mongoose.Types.ObjectId.isValid(workspaceId)) return false;
-  const found = await Workspace.exists({
-    _id: workspaceId,
-    $or: [{ owner: userId }, { members: userId }],
-  });
+  const found = await Workspace.exists({ _id: workspaceId, owner: userId });
   return Boolean(found);
 }
 
@@ -107,10 +103,11 @@ exports.list = async (req, res, next) => {
 
     // ── Workspace scoping ─────────────────────────────────────────────────
     // Applied ON TOP of the access filter above, never instead of it, so a
-    // workspace can only narrow what this user could already see. Note there is
-    // deliberately no membership check here: it would add a query and change
-    // nothing, because the access filter already bounds the result to this
-    // user's own documents.
+    // workspace can only narrow what this user could already see. There is
+    // deliberately no ownership check on the workspace id itself: it would add
+    // a query and change nothing, because the access filter already bounds the
+    // result to documents this user can see. Passing someone else's workspace
+    // id simply matches none of them.
     if (workspace !== undefined && workspace !== "") {
       if (workspace === "unfiled" || workspace === "none" || workspace === "null") {
         query.workspace = null;

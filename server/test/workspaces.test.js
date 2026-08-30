@@ -3,18 +3,18 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * Filing documents into workspaces, against the real server on the LOCAL stack.
  *
- * The rule under test: a workspace is a LABEL, never a grant.
+ * The rule under test: a workspace is a PRIVATE organisational category, never
+ * a grant. It belongs to one user; there is no membership.
  *
- *   - Only the document's OWNER may file it, and only into a workspace they own
- *     or belong to. A collaborator's attempt is a 404, the same answer as a
- *     workspace that does not exist, so the endpoint cannot be used to discover
- *     which workspace ids are real.
- *   - Membership of a workspace confers NO access to the documents in it. The
+ *   - Only the document's OWNER may file it, and only into a workspace they own.
+ *     A collaborator's attempt is a 404, the same answer as a workspace that
+ *     does not exist, so the endpoint cannot be used to discover which
+ *     workspace ids are real.
+ *   - Filing a document into a workspace confers NO access on anyone. The
  *     workspace filter is applied on top of the owner/collaborator scope, so it
  *     can only narrow what the caller could already see. This is the half that
  *     would turn workspaces into a side channel if it were wrong, so it is
- *     tested from the outside: a non-collaborator who is a member of the
- *     workspace must still see nothing.
+ *     tested from the outside, including with the owner's workspace id in hand.
  *   - Deleting a workspace unfiles its documents rather than deleting them.
  */
 
@@ -199,7 +199,7 @@ describe("who may file a document", () => {
     assert.equal(check.body.workspace, null, "and the document must be unchanged");
   });
 
-  test("the owner cannot file into a workspace they do not belong to", async () => {
+  test("the owner cannot file into someone else's workspace", async () => {
     const foreign = await makeWorkspace("stranger", "Stranger's WS");
     const doc = await makeDoc("owner", "Mine to file");
     const id = docId(doc.body);
@@ -221,48 +221,95 @@ describe("who may file a document", () => {
     assert.equal(res.status, 404);
   });
 
-  test("a workspace is not a side channel: membership grants no document access", async () => {
-    // The strongest form of the rule. `collab` is a MEMBER of the workspace but
-    // NOT a collaborator on the document filed into it.
+  test("a workspace is not a side channel: filing exposes a document to nobody", async () => {
+    // The property that would make workspaces a privilege-escalation path if it
+    // were wrong. `stranger` is not a collaborator on the document and does not
+    // own the workspace it is filed into.
     //
-    // The membership is written straight to the database because there is no
-    // endpoint that adds a member — workspaceController.update accepts only
-    // name and color. Going through the API would have left `collab` a
-    // non-member and this test would have passed without ever exercising the
-    // property it names.
-    const shared = await makeWorkspace("owner", "Shared WS");
-    await mongoose.connect(process.env.MONGODB_URI);
-    const updated = await mongoose.connection.db.collection("workspaces").updateOne(
-      { _id: new mongoose.Types.ObjectId(shared) },
-      { $addToSet: { members: new mongoose.Types.ObjectId(U.collab.id) } }
-    );
-    assert.equal(updated.modifiedCount, 1, "precondition: collab must really be a member");
-    const check = await mongoose.connection.db.collection("workspaces")
-      .findOne({ _id: new mongoose.Types.ObjectId(shared) });
-    assert.ok(
-      check.members.some((m) => String(m) === String(U.collab.id)),
-      "precondition: membership must be readable back"
-    );
-    await mongoose.disconnect();
-
-    const doc = await makeDoc("owner", "Secret in a shared workspace", shared);
+    // This used to set `stranger` up as a MEMBER of the workspace. That field
+    // is gone: a workspace is private to one user, so the sharper statement is
+    // that filing exposes a document to nobody at all, and that passing a
+    // workspace id you do not own cannot widen your own view.
+    const ws = await makeWorkspace("owner", "Private WS");
+    const doc = await makeDoc("owner", "Filed and private", ws);
     const id = docId(doc.body);
 
-    // Not visible in an unfiltered list…
-    const all = (await listDocs("collab")).body.documents.map((d) => d.title);
-    assert.ok(!all.includes("Secret in a shared workspace"), "must not appear in their document list");
+    // Not in their unfiltered list…
+    const all = (await listDocs("stranger")).body.documents.map((d) => d.title);
+    assert.ok(!all.includes("Filed and private"), "must not appear in another user's list");
 
-    // …nor by filtering on the very workspace they belong to…
-    const filtered = await listDocs("collab", `?workspace=${shared}`);
-    assert.equal(filtered.status, 200);
-    assert.ok(
-      !filtered.body.documents.map((d) => d.title).includes("Secret in a shared workspace"),
-      "filtering by a workspace must not widen what the caller can see"
+    // …not by filtering on the owner's workspace id, which the stranger can
+    // guess or read from anywhere it leaks. The filter narrows their own set;
+    // it never reaches into someone else's.
+    const filtered = await listDocs("stranger", `?workspace=${ws}`);
+    assert.equal(filtered.status, 200, "the filter is not an error, it is simply empty");
+    assert.deepEqual(
+      filtered.body.documents.map((d) => d.title), [],
+      "filtering by a workspace you do not own must not widen what you can see"
     );
 
-    // …nor by fetching it directly.
-    const direct = await req("GET", `/api/documents/${id}`, U.collab.token);
-    assert.equal(direct.status, 403, "workspace membership is not document access");
+    // …and not by fetching it directly.
+    const direct = await req("GET", `/api/documents/${id}`, U.stranger.token);
+    assert.equal(direct.status, 403, "filing a document grants access to nobody");
+  });
+
+  test("a workspace is visible only to its owner", async () => {
+    await makeWorkspace("owner", "Owner Only WS");
+    const theirs = await req("GET", "/api/workspaces", U.stranger.token);
+    assert.equal(theirs.status, 200);
+    assert.ok(
+      !theirs.body.workspaces.some((w) => w.name === "Owner Only WS"),
+      "workspaces are private: another user must not see them listed"
+    );
+  });
+
+  test("no response exposes a members array", async () => {
+    // The field is gone from the schema; this pins the API surface so it cannot
+    // reappear and re-imply a sharing capability that does not exist.
+    const created = await req("POST", "/api/workspaces", U.owner.token, { name: "Shape WS" });
+    const body = created.body.workspace ?? created.body;
+    assert.equal(body.members, undefined, "create must not return a members array");
+
+    const listed = await req("GET", "/api/workspaces", U.owner.token);
+    for (const w of listed.body.workspaces) {
+      assert.equal(w.members, undefined, "list must not return a members array");
+    }
+  });
+
+  test("a legacy workspace still carrying members does not expose it", async () => {
+    // Rows written before the field was removed still have it on disk. Mongoose
+    // hydrates unknown fields rather than dropping them, and the list endpoint
+    // uses .lean(), which returns the raw document — so without the explicit
+    // projection the API would keep advertising membership on every
+    // pre-existing workspace. scripts/drop-workspace-members.js removes the
+    // data; this pins the behaviour for the window before it has run, and for
+    // any row that reappears.
+    const id = await makeWorkspace("owner", "Legacy WS");
+
+    await mongoose.connect(process.env.MONGODB_URI);
+    await mongoose.connection.db.collection("workspaces").updateOne(
+      { _id: new mongoose.Types.ObjectId(id) },
+      { $set: { members: [new mongoose.Types.ObjectId(U.owner.id), new mongoose.Types.ObjectId(U.stranger.id)] } }
+    );
+    const onDisk = await mongoose.connection.db.collection("workspaces")
+      .findOne({ _id: new mongoose.Types.ObjectId(id) });
+    assert.equal(onDisk.members.length, 2, "precondition: the legacy field is really on disk");
+    await mongoose.disconnect();
+
+    const listed = await req("GET", "/api/workspaces", U.owner.token);
+    const row = listed.body.workspaces.find((w) => (w._id ?? w.id) === id);
+    assert.ok(row, "precondition: the workspace is listed");
+    assert.equal(row.members, undefined, "the legacy array must not reach the client");
+
+    const renamed = await req("PATCH", `/api/workspaces/${id}`, U.owner.token, { name: "Legacy WS 2" });
+    assert.equal(renamed.body.members, undefined, "nor through update");
+
+    // And it still grants the listed user nothing.
+    const theirs = await req("GET", "/api/workspaces", U.stranger.token);
+    assert.ok(
+      !theirs.body.workspaces.some((w) => (w._id ?? w.id) === id),
+      "being in a legacy members array must not make the workspace visible"
+    );
   });
 });
 

@@ -1,7 +1,11 @@
 /**
  * server/src/controllers/workspaceController.js
  * ─────────────────────────────────────────────────────────────────────────────
- * GET    /api/workspaces      → list workspaces the current user owns or belongs to
+ * A workspace is a PRIVATE organisational category — see models/Workspace.js.
+ * Every route here is therefore scoped to `owner: req.user.id`, with no
+ * membership dimension: there is nobody else who can see a workspace.
+ *
+ * GET    /api/workspaces      → list the current user's workspaces
  * POST   /api/workspaces      → create a new workspace
  * PATCH  /api/workspaces/:id  → rename / recolor (owner only)
  * DELETE /api/workspaces/:id  → delete (owner only)
@@ -15,9 +19,16 @@ const redisService = require("../services/redisService");
 exports.list = async (req, res, next) => {
     try {
         const userId = req.user.id;
-        const workspaces = await Workspace.find({
-            $or: [{ owner: userId }, { members: userId }],
-        })
+        // `-members` is defensive, not cosmetic. Rows created before the field
+        // was removed still carry it on disk, and Mongoose hydrates unknown
+        // fields rather than dropping them — .lean() below returns the raw
+        // document outright. Without this projection the API would keep
+        // advertising a membership capability that no longer exists, on every
+        // pre-existing workspace, until scripts/drop-workspace-members.js has
+        // run. The projection makes the contract true immediately; the script
+        // removes the dead data.
+        const workspaces = await Workspace.find({ owner: userId })
+            .select("-members")
             .sort({ createdAt: 1 })
             .lean();
 
@@ -40,7 +51,6 @@ exports.create = async (req, res, next) => {
             name: name.trim(),
             color: color || "#22c55e",
             owner: req.user.id,
-            members: [req.user.id],
         });
 
         res.status(201).json(workspace);
@@ -60,7 +70,7 @@ exports.update = async (req, res, next) => {
         const workspace = await Workspace.findOneAndUpdate(
             { _id: req.params.id, owner: req.user.id }, // only the owner can edit
             updates,
-            { new: true, runValidators: true }
+            { new: true, runValidators: true, projection: { members: 0 } }
         );
 
         if (!workspace) {
@@ -91,9 +101,11 @@ exports.remove = async (req, res, next) => {
         // tidying up a chore and leaves dead workspaces behind, and because
         // "no workspace" is already a valid resting state for a document.
         //
-        // This runs for EVERY document in the workspace, including ones owned
-        // by other members, because the alternative is a dangling reference
-        // pointing at a workspace that no longer exists.
+        // Filtering on the workspace id alone is exact: only a document's owner
+        // can file it, and only into a workspace they own, so everything here
+        // belongs to this same user. The filter stays on the id rather than
+        // gaining a redundant owner clause, which also makes it correct for any
+        // row that predates that rule.
         //
         // The ids are collected BEFORE the update: afterwards these documents
         // no longer match the filter, and their cached canonical shape still
