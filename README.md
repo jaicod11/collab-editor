@@ -1,6 +1,24 @@
-# CollabDocs
+<div align="center">
 
-**Live app → [collab-ediitor.vercel.app](https://collab-ediitor.vercel.app)**
+# 📝 CollabDocs
+
+**Real-time collaborative editing on an Operational Transformation engine written from scratch.**
+
+[![Live Demo](https://img.shields.io/badge/Live_Demo-collab--ediitor.vercel.app-22c55e?style=for-the-badge&logo=vercel&logoColor=white)](https://collab-ediitor.vercel.app)
+
+[![Node.js](https://img.shields.io/badge/Node.js-22.12+-339933?style=for-the-badge&logo=node.js&logoColor=white)](.nvmrc)
+[![React](https://img.shields.io/badge/React-18.3-61DAFB?style=for-the-badge&logo=react&logoColor=black)](client/package.json)
+[![Socket.io](https://img.shields.io/badge/Socket.io-4.7-010101?style=for-the-badge&logo=socket.io&logoColor=white)](server/package.json)
+[![Tests](https://img.shields.io/badge/Tests-332_passing-22c55e?style=for-the-badge)](#tests)
+[![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](LICENSE)
+
+### 🔗 [**Open the live app →**](https://collab-ediitor.vercel.app)
+
+</div>
+
+---
+
+## 📖 About
 
 A real-time collaborative document editor built on a custom **Operational
 Transformation engine written from scratch** — no Yjs, no Automerge, no ShareDB.
@@ -10,13 +28,13 @@ transformed server-side so every replica converges on the same text.
 The OT engine is the point of the project. Everything else — auth, sharing,
 roles, version history — exists to put the engine under realistic load.
 
-> **First load may take 30–60 seconds.** The backend runs on Render's free tier,
-> which spins down after 15 minutes of inactivity. This is expected, not a
+> ⏳ **First load may take 30–60 seconds.** The backend runs on Render's free
+> tier, which spins down after 15 minutes of inactivity. This is expected, not a
 > failure. See [Known limitations](#known-limitations).
 
 ---
 
-## Features
+## ✨ Features
 
 - **Real-time collaborative editing** — concurrent edits converge; the caret
   holds its position when remote operations rewrite the document around it.
@@ -53,7 +71,7 @@ roles, version history — exists to put the engine under realistic load.
 
 ---
 
-## Architecture
+## 🏗️ Architecture
 
 Three packages. `shared/` is the important one: it is the single source of truth
 for the OT algorithm, written as ESM and imported by **both** the browser and
@@ -113,7 +131,9 @@ Persistence sits inside the critical section deliberately. It lengthens the
 lock, and the trade is that an `op:ack` means the operation is durable — a
 client that has been acked never has to wonder whether its edit survived.
 
-### Tech stack
+---
+
+## 🛠️ Tech Stack
 
 | Layer | Technology |
 |---|---|
@@ -128,7 +148,7 @@ client that has been acked never has to wonder whether its edit survived.
 
 ---
 
-## Engineering notes
+## 🔬 Engineering notes
 
 ### The OT engine and its correctness
 
@@ -330,7 +350,9 @@ The client tears down the session only on a 401 carrying `code:
 "AUTH_REQUIRED"`, so a transient Redis outage cannot log the entire user base
 out.
 
-### Tests
+<a id="tests"></a>
+
+### 🧪 Tests
 
 **332 tests** across 24 files, all runnable locally:
 
@@ -347,7 +369,9 @@ instead of writing to it.
 
 ---
 
-## Known limitations
+<a id="known-limitations"></a>
+
+## ⚠️ Known limitations
 
 **It must run as exactly one instance.** `@socket.io/redis-adapter` is not
 installed. The *edit stream* genuinely is cross-node — operations, per-user
@@ -359,10 +383,8 @@ per-process `Map`, and the post-restore `doc:load` broadcast is local too. With
 two instances, users on different nodes would see each other's edits but not
 each other's cursors, and each would see an incomplete collaborator list.
 
-Lifting it would take: installing the Redis adapter and wiring it into
-`initSocket()`; moving room membership into shared Redis state (an adapter alone
-cannot fix per-process membership); and sticky sessions or websocket-only
-transport so the handshake does not land on a different node mid-negotiation.
+What lifting it would take is set out in
+[Running Multiple Instances](#multiple-instances).
 
 **Search matches titles only.** `content` was removed from the text index
 because every `op:submit` rewrites `Document.content`, so MongoDB re-tokenised
@@ -396,7 +418,37 @@ server; the assembled UI is verified by hand against the checklist in
 
 ---
 
-## Local development
+<a id="multiple-instances"></a>
+
+## 📈 Running Multiple Instances
+
+**The app runs as exactly one instance today** — see
+[Known limitations](#known-limitations) for the constraint itself. This is what
+it would take to lift it.
+
+| Path | Cross-node today? | Mechanism |
+|---|:--:|---|
+| Document operations (`op:broadcast`) | ✅ | Published to Redis, re-broadcast by every subscriber |
+| Per-user notifications (`notification:new`, `access:*`) | ✅ | Personal `user:{id}` room, fanned out via Redis |
+| Access revocation / role change | ✅ | Redis channel, applied on each node's local sockets |
+| Presence (`presence:join` / `leave` / cursor) | ❌ | `socket.to(room)` on the default in-memory adapter |
+| Room membership (`socket/rooms.js`) | ❌ | A per-process `Map` |
+| Post-restore `doc:load` broadcast | ❌ | `io.to(room)`, local only |
+
+1. **Install `@socket.io/redis-adapter`** and wire it into `initSocket()`. That
+   makes `io.to()` / `socket.to()` fan out across nodes, fixing presence and
+   making the hand-rolled op pub/sub redundant.
+2. **Move room membership out of `socket/rooms.js`** into shared Redis state —
+   per-process membership cannot be made correct by an adapter alone.
+3. **Sticky sessions** at the load balancer, or `transports: ["websocket"]` on
+   the client, so Socket.io's long-polling handshake does not land on a
+   different node mid-negotiation.
+4. **Keep a single shared Redis.** `services/lockService.js` already assumes
+   every node talks to the same instance; separate Redises would void the lock.
+
+---
+
+## 🚀 Quick Start
 
 ### Prerequisites
 
@@ -442,13 +494,138 @@ deployed trees match.
 ### 4. Tests
 
 ```bash
-npm test                    # all 273, in order: shared → client → server
+npm test                    # all 332, in order: shared → client → server
 npm run test:ot             # shared/ — convergence sweeps and fuzz
 npm run test:client         # client/
 npm run test:persistence    # server/ — needs the Docker stack running
 ```
 
-### Project structure
+---
+
+## 🌐 API Reference
+
+Every route below sits behind `protect` (Bearer JWT) except `POST /api/auth/register`,
+`POST /api/auth/login` and `GET /health`. Authorisation notes in brackets are
+enforced server-side, not merely hidden in the UI.
+
+<details>
+<summary><strong>REST endpoints</strong></summary>
+
+<br>
+
+**Auth** — `/api/auth`
+
+| Method | Path | Notes |
+|---|---|---|
+| `POST` | `/register` | `{ name, email, password }` → token |
+| `POST` | `/login` | `{ email, password }` → token |
+| `POST` | `/logout` | Bumps `tokenVersion`, revoking outstanding tokens |
+| `GET` | `/me` | Current profile |
+| `PATCH` | `/me` | Update name / bio |
+| `PATCH` | `/password` | Change password — also revokes outstanding tokens |
+| `DELETE` | `/me` | Delete account |
+
+**Documents** — `/api/documents`
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/` | `?filter=all\|owned\|shared\|starred\|archived\|trash`, `?search=`, `?workspace=<id\|unfiled>`, `?label=` |
+| `POST` | `/` | Create |
+| `GET` | `/:id` | Single document |
+| `PATCH` | `/:id` | Title, status, workspace **[owner]** |
+| `DELETE` | `/:id` | Permanent delete **[owner]** |
+| `PATCH` | `/:id/leave` | Remove yourself from a shared document |
+| `PUT` `DELETE` | `/:id/star` | Per-user star — any access level |
+| `PUT` | `/:id/labels` | Replace labels **[owner or editor]** |
+| `GET` | `/labels/in-use` | Labels across documents you can see |
+
+**Sharing** — `/api/documents`
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/join/:token` | Resolve a share link — title and owner only, never content |
+| `POST` | `/join/:token` | Request access |
+| `POST` `DELETE` | `/:id/share` | Create / revoke the share token **[owner]** |
+| `GET` | `/:id/requests` | Pending requests **[owner]** |
+| `POST` | `/:id/requests/:reqId/approve` | **[owner]** |
+| `POST` | `/:id/requests/:reqId/deny` | **[owner]** |
+| `GET` | `/:id/collaborators` | Any access; the token is never included |
+| `PATCH` | `/:id/collaborators/:userId` | Change role **[owner]** |
+| `DELETE` | `/:id/collaborators/:userId` | Remove **[owner]** |
+
+**History** — `/api/history`
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/:id` | Version list |
+| `POST` | `/:id/restore/:revId` | Restore a revision |
+
+**Notifications** — `/api/notifications`
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/` | Paginated, with `unreadCount` |
+| `PATCH` | `/:id/read` | Mark one read |
+| `POST` | `/read-all` | Mark all read |
+
+**Workspaces** — `/api/workspaces`
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` `POST` | `/` | List / create — private to the owner |
+| `PATCH` `DELETE` | `/:id` | Rename, recolour, delete **[owner]** |
+
+**Health** — `GET /health` probes MongoDB and Redis, returns `503` naming a
+failed dependency. Bounded at 2s.
+
+</details>
+
+<details>
+<summary><strong>Socket events</strong></summary>
+
+<br>
+
+**Client → Server**
+
+| Event | Payload |
+|---|---|
+| `doc:join` | `{ docId }` |
+| `doc:leave` | `{ docId }` |
+| `op:submit` | `{ docId, op, revision }` |
+| `doc:restore` | `{ docId, versionId }` |
+| `presence:cursor` | `{ docId, cursor }` |
+
+**Server → Client**
+
+| Event | Payload |
+|---|---|
+| `doc:load` | `{ content, revision, title, role }` |
+| `op:ack` | `{ revision, op }` — to the submitting socket only |
+| `op:broadcast` | `{ op, revision, userId }` — to everyone else, via Redis |
+| `doc:error` | `{ code, message }` — the client keys recovery on `code` |
+| `presence:update` | Full roster, to the joining socket |
+| `presence:join` | `{ userId, name, initials }` |
+| `presence:leave` | `{ userId }` |
+| `presence:cursor` | `{ userId, cursor }` |
+| `access:role` | `{ docId, role }` — role changed, no reconnect needed |
+| `access:granted` | `{ docId, title, role }` — request approved |
+| `access:denied` | `{ docId }` |
+| `notification:new` | `{ notification }` — live bell update |
+
+Presence events use the default in-memory adapter and are therefore
+single-instance; `op:broadcast`, `access:*` and `notification:new` fan out
+across nodes through Redis. See [Multiple Instances](#multiple-instances).
+
+</details>
+
+---
+
+## 📁 Project Structure
+
+<details>
+<summary><strong>View the directory tree</strong></summary>
+
+<br>
 
 ```
 collab-editor/
@@ -481,9 +658,11 @@ collab-editor/
 └── infra/                   # local dev stack only
 ```
 
+</details>
+
 ---
 
-## Deployment
+## 🚢 Deployment
 
 Render (backend) + Vercel (frontend), with MongoDB Atlas and Upstash Redis.
 Full runbook — service settings, environment variables, the two required
@@ -492,6 +671,6 @@ migrations, the Node pin, cold starts, and a post-deploy smoke checklist — is 
 
 ---
 
-## License
+## 📜 License
 
 MIT — see [LICENSE](LICENSE).
