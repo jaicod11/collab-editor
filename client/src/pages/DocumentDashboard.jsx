@@ -10,6 +10,8 @@ import { useToast } from "../components/UI/Toast";
 import { useAuthStore } from "../store/authSlice";
 import Sidebar, { T, Icons } from "../components/Layout/Sidebar";
 import OpenSharedLink from "../components/UI/OpenSharedLink";
+import LabelChips from "../components/UI/LabelChips";
+import { useLabels } from "../hooks/useLabels";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function getGreeting() {
@@ -119,7 +121,7 @@ function TopBar({ user, search, onSearch, onLogout, navigate }) {
 }
 
 // ─── Document card ────────────────────────────────────────────────────────────
-function DocCard({ doc, index, onClick }) {
+function DocCard({ doc, index, onClick, activeLabel, onFilterLabel }) {
   const [hov, setHov] = useState(false);
   return (
     <button onClick={() => onClick(doc)}
@@ -136,6 +138,9 @@ function DocCard({ doc, index, onClick }) {
           </div>
         </div>
       </div>
+      {doc.labels?.length > 0 && (
+        <LabelChips labels={doc.labels} max={3} active={activeLabel} onClick={onFilterLabel} />
+      )}
       <div style={{ display: "flex", alignItems: "center", gap: 8, paddingTop: 12, borderTop: `1px solid ${T.border}` }}>
         <div style={{ width: 20, height: 20, borderRadius: "50%", background: `linear-gradient(135deg,${T.primary},#16a34a)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 8, fontWeight: 700, color: T.primFg, flexShrink: 0 }}>
           {userInitials(ownerName(doc.owner))}
@@ -161,6 +166,8 @@ export default function DocumentDashboard() {
   const { loading, loadDocuments, createDoc } = useDocument();
   const [documents, setDocuments] = useState([]);
   const [search, setSearch] = useState("");
+  const [labelFilter, setLabelFilter] = useState(null);
+  const { inUse: labelsInUse, loadInUse } = useLabels();
 
   // loadDocuments is useCallback'd over zustand store actions, which keep a
   // stable identity, so declaring the dependency does not make this re-run.
@@ -172,11 +179,23 @@ export default function DocumentDashboard() {
       .catch(() => toastRef.current.error("Could not load your documents"));
   }, [loadDocuments]);
 
+  useEffect(() => { loadInUse(); }, [loadInUse]);
+
   const filtered = useMemo(() => {
-    if (!search.trim()) return documents;
-    const q = search.toLowerCase();
-    return documents.filter((d) => (d.title ?? "").toLowerCase().includes(q));
-  }, [documents, search]);
+    let docs = documents;
+    if (labelFilter) docs = docs.filter((d) => (d.labels ?? []).includes(labelFilter));
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      docs = docs.filter((d) => (d.title ?? "").toLowerCase().includes(q));
+    }
+    return docs;
+  }, [documents, search, labelFilter]);
+
+  // A chip already filtering toggles back off, so there is always a way out.
+  const applyLabelFilter = useCallback(
+    (label) => setLabelFilter((cur) => (label && label !== cur ? label : null)),
+    []
+  );
 
   // There is no pin feature — a "Pinned" heading used to sit over
   // filtered.slice(0,3), which is simply the three most recently edited
@@ -212,7 +231,7 @@ export default function DocumentDashboard() {
             </div>
           ) : recent.length === 0 ? (
             <div style={{ textAlign: "center", padding: "60px 0" }}>
-              <p style={{ color: T.mutedFg, fontSize: 14, marginBottom: 16 }}>{search ? "No documents match." : "No documents yet."}</p>
+              <p style={{ color: T.mutedFg, fontSize: 14, marginBottom: 16 }}>{search ? "No documents match." : labelFilter ? `No documents labelled "${labelFilter}".` : "No documents yet."}</p>
               {!search && (
                 <button onClick={handleNewDoc} style={{ background: T.primary, color: T.primFg, border: "none", borderRadius: 6, padding: "8px 20px", fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: T.font }}>
                   Create your first document
@@ -220,9 +239,25 @@ export default function DocumentDashboard() {
               )}
             </div>
           ) : (
+            <>
+            {/* Only shown when labels exist. An empty filter bar would be the
+                same fabrication as the old inferred TAG column. */}
+            {(labelsInUse.length > 0 || labelFilter) && (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+                <span style={{ fontSize: 11, fontWeight: 500, color: T.mutedFg, textTransform: "uppercase", letterSpacing: "0.08em" }}>Filter</span>
+                <LabelChips labels={labelsInUse} active={labelFilter} onClick={applyLabelFilter} />
+                {labelFilter && (
+                  <button onClick={() => applyLabelFilter(null)}
+                    style={{ background: "none", border: "none", color: T.primary, fontSize: 11.5, cursor: "pointer", fontFamily: T.font, padding: 0 }}>
+                    Clear
+                  </button>
+                )}
+              </div>
+            )}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 16 }}>
-              {recent.map((doc, i) => <DocCard key={docPk(doc)} doc={doc} index={i} onClick={handleOpen} />)}
+              {recent.map((doc, i) => <DocCard key={docPk(doc)} doc={doc} index={i} onClick={handleOpen} activeLabel={labelFilter} onFilterLabel={applyLabelFilter} />)}
             </div>
+            </>
           )}
         </section>
       </main>

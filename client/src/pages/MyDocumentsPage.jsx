@@ -4,7 +4,7 @@
  * "My Documents" list/table view converted from Stitch output.
  *
  * Features:
- *   - Category filter pills (All, Product, Design, Engineering, Research, Finance, Marketing)
+ *   - Label filter (from the document's own `labels`, never inferred from the title)
  *   - Sort by: Last edited, Created, Title
  *   - List view (table rows) with icon, title, tag, author, date, three-dot menu
  *   - Three-dot context menu: Open, Rename, Duplicate, Copy Link, Star, Archive, Move to Trash
@@ -37,6 +37,9 @@ import { useToast } from "../components/UI/Toast";
 import { useAuthStore } from "../store/authSlice";
 import Sidebar, { T, Icons } from "../components/Layout/Sidebar";
 import PortalMenu from "../components/UI/PortalMenu";
+import LabelChips from "../components/UI/LabelChips";
+import LabelEditor from "../components/UI/LabelEditor";
+import { useLabels } from "../hooks/useLabels";
 import api from "../services/api";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -91,7 +94,7 @@ function MenuItemRow({ icon, label, onClick, danger, muted }) {
 }
 
 // ─── Three-dot context menu (rendered via portal — see PortalMenu.jsx) ───────
-function ContextMenu({ doc, anchorRef, onClose, onOpen, onRename, onDuplicate, onArchive, onMoveToTrash, onToggleStar, onMoveToWorkspace }) {
+function ContextMenu({ doc, anchorRef, onClose, onOpen, onRename, onDuplicate, onArchive, onMoveToTrash, onToggleStar, onMoveToWorkspace, onEditLabels }) {
     const { toast } = useToast();
     // Server-backed: a star follows the user, not the browser.
     const starred = Boolean(doc.starred);
@@ -123,6 +126,10 @@ function ContextMenu({ doc, anchorRef, onClose, onOpen, onRename, onDuplicate, o
                 <MenuItemRow icon="edit" label="Rename" onClick={() => { onRename(doc); onClose(); }} />
                 <MenuItemRow icon="content_copy" label="Duplicate" onClick={() => { onDuplicate(doc); onClose(); }} />
                 <MenuItemRow icon="link" label="Copy link" onClick={copyLink} />
+                {onEditLabels && (
+                    <MenuItemRow icon="label" label="Labels"
+                        onClick={() => { onEditLabels(doc); onClose(); }} />
+                )}
                 {onMoveToWorkspace && (
                     <MenuItemRow icon="folder" label="Move to workspace"
                         onClick={() => { onMoveToWorkspace(doc); onClose(); }} />
@@ -283,7 +290,7 @@ function MoveToTrashModal({ doc, onConfirm, onClose }) {
 }
 
 // ─── Document table row ───────────────────────────────────────────────────────
-function DocRow({ doc, index, onOpen, onRename, onDuplicate, onArchive, onMoveToTrash, onToggleStar, onMoveToWorkspace }) {
+function DocRow({ doc, index, onOpen, onRename, onDuplicate, onArchive, onMoveToTrash, onToggleStar, onMoveToWorkspace, onEditLabels, activeLabel, onFilterLabel }) {
     const [hov, setHov] = useState(false);
     const [menuOpen, setMenuOpen] = useState(false);
     const btnRef = useRef(null);
@@ -295,7 +302,7 @@ function DocRow({ doc, index, onOpen, onRename, onDuplicate, onArchive, onMoveTo
             onMouseLeave={() => { setHov(false); }}
             style={{
                 display: "grid",
-                gridTemplateColumns: "1fr 160px 160px 44px",
+                gridTemplateColumns: "1fr 170px 140px 150px 44px",
                 alignItems: "center", gap: 16,
                 padding: "14px 20px",
                 borderBottom: `1px solid ${T.border}`,
@@ -312,6 +319,18 @@ function DocRow({ doc, index, onOpen, onRename, onDuplicate, onArchive, onMoveTo
                 <span style={{ fontSize: 14, fontWeight: 500, color: T.fg, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {doc.title ?? "Untitled Document"}
                 </span>
+            </div>
+
+            {/* Labels — the real replacement for the old inferred TAG column.
+                Rendered by the shared LabelChips so every page shows the same
+                stored value, and clickable to filter by it. */}
+            <div style={{ minWidth: 0, overflow: "hidden" }}>
+                <LabelChips
+                    labels={doc.labels}
+                    max={2}
+                    active={activeLabel}
+                    onClick={onFilterLabel}
+                />
             </div>
 
             {/* Author */}
@@ -357,6 +376,7 @@ function DocRow({ doc, index, onOpen, onRename, onDuplicate, onArchive, onMoveTo
                         onMoveToTrash={onMoveToTrash}
                         onToggleStar={onToggleStar}
                         onMoveToWorkspace={onMoveToWorkspace}
+                        onEditLabels={onEditLabels}
                     />
                 )}
             </div>
@@ -419,8 +439,11 @@ export default function MyDocumentsPage() {
 
     // The workspace view is this page with ?workspace=<id|unfiled>, so the
     // table, row menus and sorting are shared rather than duplicated.
-    const [searchParams] = useSearchParams();
+    const [searchParams, setSearchParams] = useSearchParams();
     const workspaceParam = searchParams.get("workspace");
+    // The label view is this same page with ?label=<label>, mirroring how the
+    // workspace view works, so the table and row menus stay shared.
+    const labelParam = searchParams.get("label");
 
     const [documents, setDocuments] = useState([]);
     const [search, setSearch] = useState("");
@@ -429,6 +452,8 @@ export default function MyDocumentsPage() {
     const [renameDoc, setRenameDoc] = useState(null);
     const [trashTarget, setTrashTarget] = useState(null); // doc pending "Move to Trash" confirm
     const [workspaceTarget, setWorkspaceTarget] = useState(null); // doc pending "Move to workspace"
+    const [labelTarget, setLabelTarget] = useState(null);         // doc pending "Labels"
+    const { inUse: labelsInUse, loadInUse, saveLabels } = useLabels();
 
     // loadDocuments is useCallback'd over zustand store actions, which keep a
     // stable identity, so declaring the dependency does not make this re-run.
@@ -439,10 +464,13 @@ export default function MyDocumentsPage() {
     toastRef.current = toast;
 
     useEffect(() => {
-        loadDocuments("all", "", workspaceParam ?? undefined)
+        loadDocuments("all", "", workspaceParam ?? undefined, labelParam ?? undefined)
             .then((data) => { if (Array.isArray(data?.documents)) setDocuments(data.documents); })
             .catch(() => toastRef.current.error("Could not load your documents"));
-    }, [loadDocuments, workspaceParam]);
+    }, [loadDocuments, workspaceParam, labelParam]);
+
+    // Populates both the filter menu and the suggestions in the label editor.
+    useEffect(() => { loadInUse(); }, [loadInUse]);
 
     // Needed both to name the current view and to populate the "Move to
     // workspace" picker.
@@ -453,9 +481,21 @@ export default function MyDocumentsPage() {
         [workspaces, workspaceParam]
     );
 
-    const heading = workspaceParam === "unfiled"
-        ? "Unfiled"
-        : activeWorkspace?.name ?? (workspaceParam ? "Workspace" : "All Documents");
+    const heading = labelParam
+        ? `Label: ${labelParam}`
+        : workspaceParam === "unfiled"
+            ? "Unfiled"
+            : activeWorkspace?.name ?? (workspaceParam ? "Workspace" : "All Documents");
+
+    /** Set, replace or clear ?label= while preserving any workspace view. */
+    const applyLabelFilter = useCallback((label) => {
+        const next = new URLSearchParams(searchParams);
+        // Clicking the label already being filtered on clears it — the chip is
+        // a toggle, so there is always a way back without hunting for a reset.
+        if (!label || label === labelParam) next.delete("label");
+        else next.set("label", label);
+        setSearchParams(next, { replace: true });
+    }, [searchParams, setSearchParams, labelParam]);
 
     // Filter + sort
     const filtered = useMemo(() => {
@@ -469,6 +509,27 @@ export default function MyDocumentsPage() {
 
     // Filing is owner-only server-side, so the action is only offered on
     // documents this user owns rather than shown and then rejected.
+    // Labels are shared document metadata, so the server allows the owner and
+    // any EDITOR — unlike filing, which is owner-only. A viewer is refused with
+    // 403; hiding the action here just avoids offering something that will fail.
+    const canLabel = useCallback((doc) => {
+        if (!user?.id) return false;
+        if (String(doc.owner?._id ?? doc.owner) === String(user.id)) return true;
+        const me = (doc.collaborators ?? []).find((c) => String(c._id ?? c.user) === String(user.id));
+        return me ? me.role !== "viewer" : false;
+    }, [user]);
+
+    const handleSaveLabels = useCallback(async (doc, labels) => {
+        const res = await saveLabels(docPk(doc), labels);
+        if (!res.ok) return toastRef.current.error(res.message);
+
+        // Render exactly what the server stored, not what was typed: it
+        // normalises, so the two can differ.
+        setDocuments((prev) => prev.map((d) => (docPk(d) === docPk(doc) ? { ...d, labels: res.labels } : d)));
+        setLabelTarget(null);
+        toastRef.current.success("Labels updated");
+    }, [saveLabels]);
+
     const canFile = useCallback(
         (doc) => Boolean(user?.id) && String(doc.owner?._id ?? doc.owner) === String(user.id),
         [user]
@@ -597,12 +658,36 @@ export default function MyDocumentsPage() {
                 {/* Table */}
                 <div style={{ background: T.surface, borderRadius: 10, border: `1px solid ${T.border}`, overflow: "hidden" }}>
                     {/* Header */}
+                {/* Label filter. Only rendered when labels actually exist — an
+                    empty filter bar would be the same fabrication as the old
+                    inferred TAG column, just quieter. */}
+                {(labelsInUse.length > 0 || labelParam) && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+                        <span style={{ fontSize: 11, fontWeight: 500, color: T.mutedFg, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                            Filter
+                        </span>
+                        <LabelChips
+                            labels={labelsInUse}
+                            active={labelParam}
+                            onClick={applyLabelFilter}
+                        />
+                        {labelParam && (
+                            <button
+                                onClick={() => applyLabelFilter(null)}
+                                style={{ background: "none", border: "none", color: T.primary, fontSize: 11.5, cursor: "pointer", fontFamily: T.font, padding: 0 }}
+                            >
+                                Clear
+                            </button>
+                        )}
+                    </div>
+                )}
+
                     <div style={{
-                        display: "grid", gridTemplateColumns: "1fr 160px 160px 44px",
+                        display: "grid", gridTemplateColumns: "1fr 170px 140px 150px 44px",
                         gap: 16, padding: "12px 20px",
                         borderBottom: `1px solid ${T.border}`,
                     }}>
-                        {["TITLE", "AUTHOR", "LAST EDITED", ""].map((h, i) => (
+                        {["TITLE", "LABELS", "AUTHOR", "LAST EDITED", ""].map((h, i) => (
                             <span key={i} style={{ fontSize: 11, fontWeight: 500, color: T.mutedFg, textTransform: "uppercase", letterSpacing: "0.08em" }}>{h}</span>
                         ))}
                     </div>
@@ -618,7 +703,11 @@ export default function MyDocumentsPage() {
                     ) : filtered.length === 0 ? (
                         <div style={{ padding: "60px 20px", textAlign: "center" }}>
                             <p style={{ color: T.mutedFg, fontSize: 14, marginBottom: 16 }}>
-                                {search ? "No documents match your search." : "No documents yet."}
+                                {search
+                                    ? "No documents match your search."
+                                    : labelParam
+                                        ? `No documents labelled "${labelParam}".`
+                                        : "No documents yet."}
                             </p>
                             {!search && (
                                 <button onClick={handleNewDoc}
@@ -637,6 +726,9 @@ export default function MyDocumentsPage() {
                                 onMoveToTrash={(d) => setTrashTarget(d)}
                                 onToggleStar={handleToggleStar}
                                 onMoveToWorkspace={canFile(doc) ? ((d) => setWorkspaceTarget(d)) : undefined}
+                                onEditLabels={canLabel(doc) ? ((d) => setLabelTarget(d)) : undefined}
+                                activeLabel={labelParam}
+                                onFilterLabel={applyLabelFilter}
                             />
                         ))
                     )}
@@ -653,6 +745,16 @@ export default function MyDocumentsPage() {
             {/* Modals */}
             {renameDoc && <RenameModal doc={renameDoc} onSave={handleRename} onClose={() => setRenameDoc(null)} />}
             {trashTarget && <MoveToTrashModal doc={trashTarget} onConfirm={handleMoveToTrash} onClose={() => setTrashTarget(null)} />}
+            {labelTarget && (
+                <LabelEditor
+                    docTitle={labelTarget.title}
+                    initial={labelTarget.labels ?? []}
+                    suggestions={labelsInUse}
+                    onSave={(labels) => handleSaveLabels(labelTarget, labels)}
+                    onClose={() => setLabelTarget(null)}
+                />
+            )}
+
             {workspaceTarget && (
                 <MoveToWorkspaceModal
                     doc={workspaceTarget}

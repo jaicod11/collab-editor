@@ -21,12 +21,16 @@ export function useDocument() {
   // `workspace` is an id, or the literal "unfiled" for documents in none. It is
   // omitted entirely when not filtering, so the unfiltered query keeps hitting
   // the index it already had.
-  const loadDocuments = useCallback(async (filter = "all", search = "", workspace) => {
+  const loadDocuments = useCallback(async (filter = "all", search = "", workspace, label) => {
     setLoading(true);
     setError(null);
     try {
       const params = { filter, search };
       if (workspace) params.workspace = workspace;
+      // Sent to the server rather than filtered client-side: the list is capped
+      // at 100 rows, so filtering after the fetch would silently hide matches
+      // that fell outside the first 100.
+      if (label) params.label = label;
       const { data } = await api.get("/documents", { params });
       setDocuments(data.documents);
       return data;

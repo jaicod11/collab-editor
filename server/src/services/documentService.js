@@ -169,6 +169,10 @@ function toCanonical(doc) {
         // owner's workspace gets an id they cannot resolve, and renders
         // nothing, rather than being shown the workspace's name.
         workspace: doc.workspace ? doc.workspace.toString() : null,
+
+        // Shared metadata, unlike workspace above: every collaborator sees the
+        // same labels, so this travels with the document for everyone.
+        labels: Array.isArray(doc.labels) ? doc.labels : [],
         statusChangedBy: doc.statusChangedBy ? person(doc.statusChangedBy) : null,
         statusChangedAt: doc.statusChangedAt ?? null,
         createdAt: doc.createdAt ?? null,

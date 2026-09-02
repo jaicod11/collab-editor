@@ -20,6 +20,19 @@
  * unfiltered indexes stay, because folding workspace into them would give the
  * unfiltered dashboard query an in-memory SORT.
  *
+ * Phase 12 ADDS one more Document index for label filtering:
+ * { owner, labels, status, updatedAt }. Filtering to one label goes from 496
+ * documents examined per 100 returned (5.0x) to 100 (1.0x), with the unfiltered
+ * dashboard query unchanged at 1.0x.
+ *
+ * There is deliberately no `collaborators.user` counterpart. A compound index
+ * may contain at most one array field, and both `collaborators.user` and
+ * `labels` are arrays, so MongoDB rejects that combination with
+ * CannotIndexParallelArrays. The collaborator branch of the $or keeps using
+ * { "collaborators.user", status, updatedAt } and applies the label as a
+ * residual filter — which stays within the caller's own access scope, unlike a
+ * standalone label index would.
+ *
  * syncIndexes() drops-then-builds, so run it during a maintenance window on a
  * large collection: queries relying on an index are unindexed while it rebuilds.
  * It is safe to run repeatedly; it is a no-op once the database matches.

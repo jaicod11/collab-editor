@@ -3,7 +3,7 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * "Shared with Me" page converted from Stitch HTML output.
  *
- * Columns: TITLE | TAG | SHARED BY | SHARED AT | ACCESS | ⋯
+ * Columns: TITLE | SHARED BY | SHARED AT | ACCESS | ⋯
  *
  * ── Dropdown menu fix ────────────────────────────────────────────────────────
  * The table wrapper below uses `overflow: hidden` (for its rounded corners).

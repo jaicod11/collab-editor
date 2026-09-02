@@ -75,7 +75,7 @@ async function resolveWorkspace(raw, userId) {
 exports.list = async (req, res, next) => {
   try {
     const userId = req.user.id;
-    const { filter = "all", search = "", workspace } = req.query;
+    const { filter = "all", search = "", workspace, label } = req.query;
 
     let query = {
       $or: [{ owner: userId }, { "collaborators.user": userId }],
@@ -121,6 +121,24 @@ exports.list = async (req, res, next) => {
 
     if (search.trim()) {
       query.$text = { $search: search.trim() };
+    }
+
+    // ── Label filter ──────────────────────────────────────────────────────
+    // Same rule as the workspace filter above: applied ON TOP of the access
+    // scope, never instead of it, so it can only narrow what this caller could
+    // already see. Labels are shared metadata, so unlike workspace there is
+    // nothing private to leak — but a label is still not a way to reach a
+    // document you have no access to.
+    //
+    // Normalised the same way writes are, so a filter typed as "Urgent"
+    // matches a label stored as "urgent" rather than silently returning
+    // nothing.
+    if (label !== undefined && label !== "") {
+      const [normalised] = Document.normaliseLabels([label]) ?? [];
+      if (!normalised) {
+        return res.status(400).json({ message: "Invalid label" });
+      }
+      query.labels = normalised;
     }
 
     const documents = await Document.find(query)
@@ -244,6 +262,91 @@ exports.update = async (req, res, next) => {
     await redisService.invalidateDocCache(req.params.id);
 
     res.json(doc);
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ── PUT /api/documents/:id/labels ─────────────────────────────────────────────
+/**
+ * Replace a document's labels.
+ *
+ * ── Who may label ────────────────────────────────────────────────────────────
+ * The OWNER and EDITORS. A viewer gets 403.
+ *
+ * The case for letting viewers label is that labelling is personal
+ * organisation, not content. That case does not hold here, because these labels
+ * are SHARED: everyone with access sees the same set, so adding one changes
+ * what other people see. That is an edit, and "cannot change what others see"
+ * is the entire definition of the viewer role — letting a viewer through would
+ * make the role's name false.
+ *
+ * The personal-organisation need is real, and it is already met: workspaces
+ * (Phase 11) are private, per-user and invisible to collaborators. Making
+ * labels per-user as well would be a second overlapping filing system with no
+ * distinct job. So the split is deliberate — workspace is private, single and
+ * owner-only; labels are shared, plural and editor-writable.
+ *
+ * Because nothing here is per-user, there is no cross-user leak to guard
+ * against: every label on a document is visible to everyone who can open it,
+ * by design.
+ *
+ * Enforcement reuses assertWriteAccess, the same helper op:submit uses, rather
+ * than a second hand-rolled check — a viewer is refused by exactly the code
+ * path that refuses their keystrokes.
+ */
+exports.setLabels = async (req, res, next) => {
+  try {
+    const docId = req.params.id;
+
+    // Throws 403 (VIEWER_READONLY) for viewers, 403 for strangers, 404 for a
+    // document that does not exist.
+    await documentService.assertWriteAccess(docId, req.user.id);
+
+    const labels = Document.normaliseLabels(req.body?.labels);
+    if (labels === null) {
+      return res.status(400).json({ message: "labels must be an array of strings" });
+    }
+
+    const doc = await Document.findByIdAndUpdate(
+      docId,
+      { labels },
+      { new: true, runValidators: true }
+    ).lean();
+
+    if (!doc) return res.status(404).json({ message: "Document not found" });
+
+    await redisService.invalidateDocCache(docId);
+
+    // Returns the normalised set, not what was sent: the client must render
+    // what was actually stored, or its chips disagree with the filter.
+    res.json({ labels: doc.labels ?? [] });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ── GET /api/documents/labels/in-use ──────────────────────────────────────────
+/**
+ * Every label in use across the documents this caller can see.
+ *
+ * Powers the filter menus. Derived from the documents themselves rather than a
+ * separate collection of label definitions, which is what makes free-form
+ * labels sustainable: nothing to keep in sync, no orphaned definitions when the
+ * last document carrying a label loses it, and no rename/delete lifecycle.
+ *
+ * Scoped by the same access filter as list(), so it cannot be used to discover
+ * which labels exist on documents the caller has no access to.
+ */
+exports.labelsInUse = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const labels = await Document.distinct("labels", {
+      $or: [{ owner: userId }, { "collaborators.user": userId }],
+      status: "Active",
+    });
+
+    res.json({ labels: labels.filter(Boolean).sort() });
   } catch (err) {
     next(err);
   }

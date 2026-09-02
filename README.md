@@ -39,6 +39,9 @@ roles, version history — exists to put the engine under realistic load.
   approvals, denials, role changes and revocations. Delivered live over the
   personal socket room so the bell updates without a refresh, and durable, so
   it survives a reload or a missed connection.
+- **Labels** — free-form tags on a document, shown in the list and filterable
+  on My Documents and the Dashboard. Shared metadata: everyone with access sees
+  the same labels, and any editor can change them.
 - **Workspaces** — private, colour-coded categories for organising your own
   documents, with a per-workspace view and an "Unfiled" one. They are personal
   filing, *not* team spaces: a workspace belongs to one user, and filing a
@@ -206,6 +209,60 @@ attributed document model (a Quill delta or ProseMirror step), plus a matching
 transform and storage format. That is a rewrite of the sync layer, not a change
 in the view.
 
+### Labels replace a column that was making things up
+
+Phase 6 deleted a TAG column. It was not backed by anything: five copies of an
+`inferCategory()` helper guessed a category from substrings of the document
+title, and because the copies had drifted to different fallbacks, **the same
+document showed a different category on different pages**. The need was real —
+there was no way to organise documents beyond title and date — so the column is
+back, this time reading a field.
+
+**Free-form strings, not a per-user vocabulary.** A vocabulary has to belong to
+someone, and these labels are shared, so "whose list constrains a document three
+people can edit?" has no good answer. It would also need its own lifecycle —
+rename, delete, merge, and cleanup when the last document using a label drops
+it — for no gain, since the set of labels in use is derivable from the documents
+themselves, which is exactly what `GET /api/documents/labels/in-use` does.
+
+The failure mode of free-form tags is fragmentation: `Urgent`, `urgent` and
+`URGENT` becoming three labels. Writes are normalised — trimmed, whitespace
+collapsed, lowercased, de-duplicated, capped at 10 per document and 32
+characters each — which prevents that *and* means the filter is a plain exact
+index match rather than a regex or a collation.
+
+**Owners and editors may label; viewers may not.** The argument for letting
+viewers label is that labelling is personal organisation rather than content.
+That argument does not apply here, because these labels are *shared*: everyone
+with access sees the same set, so adding one changes what other people see. That
+is an edit, and "cannot change what others see" is the whole definition of the
+viewer role. The refusal reuses `assertWriteAccess` — the same helper that
+refuses a viewer's keystrokes — rather than a second hand-rolled check.
+
+The personal-organisation need is real and already met: workspaces are private,
+per-user and invisible to collaborators. Making labels per-user as well would
+have been a second overlapping filing system with no distinct job. The split is
+deliberate — **workspace is private, single and owner-only; labels are shared,
+plural and editor-writable** — and because nothing about labels is per-user,
+there is no cross-user leak to guard against.
+
+**One index, not two, and that is MongoDB's rule rather than a choice.** The
+workspace filter got a matching pair of compound indexes, one per `$or` branch.
+Labels cannot: a compound index may contain at most one array field, and both
+`collaborators.user` and `labels` are arrays, so
+`{ "collaborators.user": 1, labels: 1, … }` is rejected with
+`CannotIndexParallelArrays`. So the owner branch gets
+`{ owner, labels, status, updatedAt }` and the collaborator branch falls back to
+its existing index with the label as a residual filter. The alternative — a
+standalone `{ labels, status, updatedAt }` — was rejected because it seeks by
+label across *every* user's documents before filtering by access.
+
+Measured on 5000 documents across 5 labels: filtering to one label goes from
+**496 documents examined per 100 returned (5.0x) to 100 (1.0x)**, and the
+unfiltered dashboard query stays at 1.0x. The plan is
+`LIMIT < FETCH < SORT_MERGE < IXSCAN` throughout — notably with no blocking
+`SORT`, which is not what you would predict from a multikey index.
+
 ### Workspaces are private filing, not a team
 
 A workspace is a **private organisational category**: a named, coloured group a
@@ -275,13 +332,13 @@ out.
 
 ### Tests
 
-**310 tests** across 22 files, all runnable locally:
+**332 tests** across 24 files, all runnable locally:
 
 | Package | Tests | Covers |
 |---|---:|---|
 | `shared` | 113 | Convergence sweeps, fuzz, batch/no-op handling, markdown helpers, newline behaviour, client sync bookkeeping |
-| `client` | 94 | Socket/session wiring, the doc:join failure path, store rehydration on reload, share-link parsing, markdown sanitisation, PDF export naming |
-| `server` | 103 | Lock primitives, concurrent admission, persistence, history coalescing, snapshot/restore, roles, sharing, presence, doc:error contract, notification scoping, workspace filing and filtering |
+| `client` | 99 | Socket/session wiring, the doc:join failure path, store rehydration on reload, share-link parsing, markdown sanitisation, PDF export naming |
+| `server` | 120 | Lock primitives, concurrent admission, persistence, history coalescing, snapshot/restore, roles, sharing, presence, doc:error contract, notification scoping, workspace filing and filtering |
 
 Every server suite that touches a database boots the real server against the
 local Docker stack, and refuses to run if `MONGODB_URI` or `REDIS_URL` is not

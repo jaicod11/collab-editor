@@ -31,6 +31,18 @@ module.exports = function errorHandler(err, req, res, _next) {
 
   res.status(status).json({
     message,
+    // Machine-readable code, forwarded ONLY for errors raised deliberately —
+    // those carry an explicit `statusCode`. Without this, codes the services
+    // already set (documentService's VIEWER_READONLY, say) were dropped here
+    // and no REST client could ever act on them, while the socket path
+    // delivered them fine: the same refusal was legible over one transport and
+    // opaque over the other.
+    //
+    // The statusCode guard is what keeps incidental system errors out. A Mongo
+    // driver error or an ENOENT also has a `code`, and those are internals that
+    // must not travel to a client; they reach here without a statusCode and are
+    // reported as a bare 500.
+    ...(err.statusCode && typeof err.code === "string" ? { code: err.code } : {}),
     ...(isDev && { stack: err.stack }),
   });
 };

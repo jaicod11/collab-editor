@@ -15,6 +15,9 @@ router.use(protect); // all document routes require auth, including share links
 router.get("/join/:token", shareCtrl.resolveToken);
 router.post("/join/:token", shareCtrl.requestAccess);
 
+// Before "/:id" so "labels" is never read as a document id.
+router.get("/labels/in-use", docCtrl.labelsInUse);
+
 router.get("/", docCtrl.list);
 router.post("/", docCtrl.create);
 router.get("/:id", docCtrl.getOne);
@@ -25,6 +28,10 @@ router.delete("/:id", docCtrl.remove);
 // Per-user stars — any level of access is enough to star for yourself.
 router.put("/:id/star", docCtrl.star);
 router.delete("/:id/star", docCtrl.unstar);
+
+// Shared document metadata, so this is EDITOR-level, not owner-only: the
+// handler calls assertWriteAccess, which refuses viewers with VIEWER_READONLY.
+router.put("/:id/labels", docCtrl.setLabels);
 
 // ── Sharing & collaborator management ─────────────────────────────────────────
 // Every handler below re-checks ownership itself (documentService.assertOwner);
